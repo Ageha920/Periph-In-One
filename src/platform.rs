@@ -20,13 +20,17 @@ use windows_sys::Win32::{
     System::{LibraryLoader::GetModuleHandleW, Registry::*, Threading::*},
     UI::{
         HiDpi::*,
-        Shell::{DefSubclassProc, GetWindowSubclass, SetWindowSubclass},
+        Shell::{DefSubclassProc, SetWindowSubclass},
         WindowsAndMessaging::*,
     },
 };
 
 pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
+}
+
+thread_local! {
+    static ATTACHED: std::cell::Cell<HWND> = const { std::cell::Cell::new(null_mut()) };
 }
 
 pub fn error_dialog(message: &str) {
@@ -142,13 +146,15 @@ pub fn hwnd(ui: &AppWindow) -> Option<HWND> {
 pub fn attach(ui: &AppWindow) -> Result<(), String> {
     let handle = hwnd(ui).ok_or("窗口句柄尚未创建")?;
     unsafe {
-        let mut reference = 0;
-        if GetWindowSubclass(handle, Some(window_proc), 0x4249, &mut reference) != 0 {
+        // GetWindowSubclass is not exported by Windows' default comctl32 v5.
+        // Track our own attachment without taking a dependency on that export.
+        if ATTACHED.with(|attached| attached.get() == handle) {
             return Ok(());
         }
         if SetWindowSubclass(handle, Some(window_proc), 0x4249, 0) == 0 {
             return Err("无法安装窗口事件处理".into());
         }
+        ATTACHED.with(|attached| attached.set(handle));
         let style = GetWindowLongPtrW(handle, GWL_STYLE) as u32;
         SetWindowLongPtrW(
             handle,
@@ -187,6 +193,7 @@ unsafe extern "system" fn window_proc(
     // queued into Slint, avoiding reentrant RefCell borrows during window calls.
     unsafe {
         match msg {
+            WM_NCDESTROY => ATTACHED.with(|attached| attached.set(null_mut())),
             WM_NCCALCSIZE if wp != 0 => return 0,
             WM_NCHITTEST => {
                 let mut rect: RECT = std::mem::zeroed();
@@ -388,6 +395,23 @@ pub fn autostart_enabled() -> bool {
     }
 }
 
+fn create_startup_shortcut(
+    path: &std::path::Path,
+    exe: &std::path::Path,
+) -> windows::core::Result<()> {
+    unsafe {
+        let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
+        link.SetPath(PCWSTR(wide(&exe.to_string_lossy()).as_ptr()))?;
+        link.SetArguments(PCWSTR(wide("--autostart").as_ptr()))?;
+        link.SetWorkingDirectory(PCWSTR(
+            wide(&exe.parent().unwrap().to_string_lossy()).as_ptr(),
+        ))?;
+        link.SetDescription(PCWSTR(wide("电量岛 — 外设电量查看器").as_ptr()))?;
+        let file: IPersistFile = link.cast()?;
+        file.Save(PCWSTR(wide(&path.to_string_lossy()).as_ptr()), true)
+    }
+}
+
 pub fn set_autostart(enabled: bool) -> Result<(), String> {
     let path = startup_path()?;
     if !enabled {
@@ -397,19 +421,8 @@ pub fn set_autostart(enabled: bool) -> Result<(), String> {
         return Ok(());
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    create_startup_shortcut(&path, &exe).map_err(|e| e.to_string())?;
     unsafe {
-        let create = (|| -> windows::core::Result<()> {
-            let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
-            link.SetPath(PCWSTR(wide(&exe.to_string_lossy()).as_ptr()))?;
-            link.SetArguments(PCWSTR(wide("--autostart").as_ptr()))?;
-            link.SetWorkingDirectory(PCWSTR(
-                wide(&exe.parent().unwrap().to_string_lossy()).as_ptr(),
-            ))?;
-            link.SetDescription(PCWSTR(wide("电量岛 — 外设电量查看器").as_ptr()))?;
-            let file: IPersistFile = link.cast()?;
-            file.Save(PCWSTR(wide(&path.to_string_lossy()).as_ptr()), true)
-        })();
-        create.map_err(|e| e.to_string())?;
         // Change only our own approval value after an explicit user toggle.
         let mut key = null_mut();
         if RegOpenKeyExW(
@@ -428,6 +441,53 @@ pub fn set_autostart(enabled: bool) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn creates_shortcut_with_silent_start_argument_in_a_temporary_folder() {
+        unsafe {
+            windows::Win32::System::Com::CoInitializeEx(
+                None,
+                windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
+            )
+            .ok()
+            .unwrap();
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("电量岛测试.lnk");
+            let exe = std::env::current_exe().unwrap();
+            create_startup_shortcut(&path, &exe).unwrap();
+            assert!(path.is_file());
+            let link: IShellLinkW =
+                CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).unwrap();
+            let file: IPersistFile = link.cast().unwrap();
+            file.Load(
+                PCWSTR(wide(&path.to_string_lossy()).as_ptr()),
+                windows::Win32::System::Com::STGM_READ,
+            )
+            .unwrap();
+            let mut target = [0u16; 32768];
+            link.GetPath(&mut target, null_mut(), 0).unwrap();
+            let length = target.iter().position(|&c| c == 0).unwrap();
+            assert!(
+                String::from_utf16_lossy(&target[..length])
+                    .eq_ignore_ascii_case(&exe.to_string_lossy())
+            );
+            let mut arguments = [0u16; 64];
+            link.GetArguments(&mut arguments).unwrap();
+            let length = arguments.iter().position(|&c| c == 0).unwrap();
+            assert_eq!(
+                String::from_utf16_lossy(&arguments[..length]),
+                "--autostart"
+            );
+            drop(file);
+            drop(link);
+            windows::Win32::System::Com::CoUninitialize();
+        }
+    }
 }
 
 pub fn copy_text(text: &str) -> Result<(), String> {

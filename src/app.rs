@@ -71,8 +71,23 @@ fn now() -> u64 {
 }
 
 fn timestamp(time: u64) -> String {
-    let date: DateTime<Local> = (UNIX_EPOCH + Duration::from_secs(time)).into();
-    date.format("%m-%d %H:%M:%S").to_string()
+    i64::try_from(time)
+        .ok()
+        .and_then(|seconds| DateTime::from_timestamp(seconds, 0))
+        .map(|date| {
+            date.with_timezone(&Local)
+                .format("%m-%d %H:%M:%S")
+                .to_string()
+        })
+        .unwrap_or_else(|| "时间未知".into())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn malformed_saved_timestamp_cannot_crash_the_panel() {
+        assert_eq!(super::timestamp(u64::MAX), "时间未知");
+    }
 }
 
 fn fallback_name(device: &Device) -> &str {
@@ -89,31 +104,46 @@ fn fallback_name(device: &Device) -> &str {
 
 fn identity_note(device: &Device) -> &'static str {
     if device.saved.identity_conflict {
-        "检测到序列号冲突，备注仅跟随本机记录。可从离线记录手动恢复备注。"
-    } else if device.saved.serial.is_empty() {
-        "设备未提供序列号。换插口后若无法识别，可从离线记录手动恢复备注。"
+        "此序列号不能唯一识别设备"
     } else {
-        "备注跟随接收器序列号；该标识不等同于外设本体铭牌 SN。"
+        ""
     }
 }
 
 impl App {
     fn notice(&self, message: impl Into<slint::SharedString>) {
-        self.ui.set_notice(message.into());
+        let message = message.into();
+        self.ui.set_notice(message.clone());
+        let transient = matches!(
+            &*message,
+            "备注已保存"
+                | "备注已重新绑定"
+                | "接收器序列号已复制"
+                | "已启用开机自启"
+                | "已关闭开机自启"
+        );
+        if transient {
+            let weak = self.ui.as_weak();
+            slint::Timer::single_shot(Duration::from_secs(3), move || {
+                if let Some(ui) = weak.upgrade() {
+                    if ui.get_notice() == message {
+                        ui.set_notice("".into());
+                    }
+                }
+            });
+        }
     }
 
     fn persist(&mut self) -> bool {
-        if let Some(error) = &self.config_error {
-            self.notice(format!(
-                "配置未保存：{error}；请修复 config/settings.json 后重启"
-            ));
+        if self.config_error.is_some() {
+            self.notice("无法保存修改，请检查 config/settings.json 后重启");
             return false;
         }
         self.config.devices = self.devices.iter().map(|d| d.saved.clone()).collect();
         match self.config.save(&self.path) {
             Ok(()) => true,
-            Err(error) => {
-                self.notice(format!("配置保存失败：{error}"));
+            Err(_) => {
+                self.notice("保存失败，请检查目录权限和可用空间");
                 false
             }
         }
@@ -131,9 +161,10 @@ impl App {
     }
 
     fn update(&self) {
-        let rows: Vec<DeviceRow> = self
-            .devices
-            .iter()
+        let mut ordered: Vec<_> = self.devices.iter().collect();
+        ordered.sort_by_key(|device| !device.present);
+        let rows: Vec<DeviceRow> = ordered
+            .into_iter()
             .map(|device| {
                 let saved = &device.saved;
                 DeviceRow {
@@ -182,14 +213,16 @@ impl App {
             .collect();
         self.ui.set_devices(ModelRc::new(VecModel::from(rows)));
         let connected = self.devices.iter().filter(|d| d.fresh).count();
-        self.ui.set_summary(
-            format!(
-                "我的设备  {}   ·   {} 台已连接",
-                self.devices.len(),
-                connected
-            )
-            .into(),
-        );
+        let present = self.devices.iter().filter(|d| d.present).count();
+        let offline = self.devices.len() - present;
+        let mut summary = vec![format!("{connected} 台已连接")];
+        if present > connected {
+            summary.push(format!("{} 台未响应", present - connected));
+        }
+        if offline > 0 {
+            summary.push(format!("{offline} 条离线记录"));
+        }
+        self.ui.set_summary(summary.join(" · ").into());
         let tooltip = if self.devices.is_empty() {
             "电量岛 · 等待设备".to_string()
         } else {
@@ -361,7 +394,7 @@ impl App {
                     } else {
                         "已关闭开机自启"
                     }),
-                    Err(error) => self.notice(error),
+                    Err(_) => self.notice("无法修改开机启动，请稍后重试"),
                 }
                 self.ui.set_autostart(platform::autostart_enabled());
             }
@@ -514,7 +547,7 @@ pub fn run() -> Result<(), String> {
     app.borrow().update();
     if app.borrow().config_error.is_some() {
         app.borrow()
-            .notice("配置读取失败，原文件已保留；修复 config/settings.json 后重启");
+            .notice("配置读取失败，请检查 config/settings.json 后重启");
     }
     // Winit creates its HWND only while the event loop is active.
     // Startup stays completely hidden; normal launches show on the first tick.

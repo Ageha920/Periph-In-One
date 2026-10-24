@@ -76,6 +76,10 @@ pub fn serial_key(vid: u16, pid: u16, serial: &str) -> String {
     format!("sn:{}", serde_json::to_string(&(vid, pid, serial)).unwrap())
 }
 
+fn name_used_as_serial(serial: &str, name: &str) -> bool {
+    !serial.is_empty() && serial.trim().eq_ignore_ascii_case(name.trim())
+}
+
 pub fn merge_readings(saved: &[SavedDevice], readings: Vec<Reading>, now: u64) -> Vec<Device> {
     let mut devices: Vec<Device> = saved
         .iter()
@@ -103,20 +107,22 @@ pub fn merge_readings(saved: &[SavedDevice], readings: Vec<Reading>, now: u64) -
     // A serial collision is remembered: a later scan with only one receiver
     // must not silently attach a historical remark to the wrong receiver.
     for device in &mut devices {
-        if counts
-            .get(&serial_key(
-                device.saved.vid,
-                device.saved.pid,
-                &device.saved.serial,
-            ))
-            .is_some_and(|n| *n > 1)
+        if name_used_as_serial(&device.saved.serial, &device.saved.hardware_name)
+            || counts
+                .get(&serial_key(
+                    device.saved.vid,
+                    device.saved.pid,
+                    &device.saved.serial,
+                ))
+                .is_some_and(|n| *n > 1)
         {
             device.saved.identity_conflict = true;
         }
     }
     for reading in readings {
         let serial_id = serial_key(reading.vid, reading.pid, &reading.serial);
-        let conflict = counts.get(&serial_id).is_some_and(|n| *n > 1)
+        let conflict = name_used_as_serial(&reading.serial, &reading.hardware_name)
+            || counts.get(&serial_id).is_some_and(|n| *n > 1)
             || devices
                 .iter()
                 .any(|d| d.saved.id == serial_id && d.saved.identity_conflict);

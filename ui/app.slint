@@ -1,4 +1,4 @@
-import { ScrollView, LineEdit, Button, CheckBox, ComboBox, AboutSlint } from "std-widgets.slint";
+import { ScrollView, LineEdit, Button, CheckBox, ComboBox } from "std-widgets.slint";
 
 export struct DeviceRow {
     id: string,
@@ -34,6 +34,7 @@ component IconButton inherits Rectangle {
 
 component DeviceCard inherits Rectangle {
     in property <DeviceRow> data;
+    private property <bool> show-hardware-name: root.data.alias != "" && root.data.alias != root.data.hardware-name;
     callback edit();
     callback copy-serial();
     height: 208px;
@@ -52,7 +53,7 @@ component DeviceCard inherits Rectangle {
     Rectangle {
         x: parent.width - 40px; y: 14px; width: 26px; height: 26px; border-radius: 7px;
         background: edit-touch.has-hover ? #edf5f0 : transparent;
-        Text { text: "✎"; color: #60766d; font-size: 18px; horizontal-alignment: center; vertical-alignment: center; }
+        Image { x: 5px; y: 5px; width: 16px; height: 16px; source: @image-url("../assets/edit.svg"); }
         edit-touch := TouchArea { mouse-cursor: pointer; clicked => { root.edit(); } }
         accessible-role: button; accessible-label: "编辑备注"; accessible-action-default => { root.edit(); }
     }
@@ -61,12 +62,12 @@ component DeviceCard inherits Rectangle {
     Text { x: parent.width - 146px; y: 93px; width: 128px; height: 18px; text: root.data.status; horizontal-alignment: right; font-size: 11px; color: root.data.fresh ? #00896c : #829088; overflow: elide; }
     Rectangle {
         x: 18px; y: 125px; width: parent.width - 36px; height: 5px; border-radius: 3px; background: #e9efec;
-        Rectangle { width: parent.width * root.data.level; height: parent.height; border-radius: 3px; background: !root.data.fresh ? #bac8bf : root.data.level < 0.3 ? #cd6854 : root.data.level < 0.6 ? #c19a43 : #00896c; }
+        Rectangle { x: 0px; y: 0px; width: parent.width * root.data.level; height: parent.height; border-radius: 3px; background: !root.data.fresh ? #bac8bf : root.data.level < 0.3 ? #cd6854 : root.data.level < 0.6 ? #c19a43 : #00896c; }
     }
-    Text { x: 18px; y: 140px; width: parent.width - 36px; height: 17px; text: root.data.hardware-name; color: #62776b; font-size: 11px; overflow: elide; }
-    Text { x: 18px; y: 162px; width: parent.width - 36px; height: 17px; text: root.data.serial; color: #7b8c82; font-size: 10px; overflow: elide; }
-    TouchArea { x: 16px; y: 159px; width: parent.width - 32px; height: 23px; mouse-cursor: pointer; clicked => { root.copy-serial(); } }
-    Text { x: 18px; y: 185px; width: parent.width - 36px; height: 14px; text: root.data.updated; color: #89988f; font-size: 10px; overflow: elide; }
+    if root.show-hardware-name: Text { x: 18px; y: 140px; width: parent.width - 36px; height: 17px; text: root.data.hardware-name; color: #62776b; font-size: 11px; overflow: elide; }
+    Text { x: 18px; y: root.show-hardware-name ? 162px : 143px; width: parent.width - 36px; height: 17px; text: root.data.serial; color: #7b8c82; font-size: 10px; overflow: elide; }
+    TouchArea { x: 16px; y: root.show-hardware-name ? 159px : 140px; width: parent.width - 32px; height: 23px; mouse-cursor: pointer; clicked => { root.copy-serial(); } }
+    Text { x: 18px; y: root.show-hardware-name ? 185px : 171px; width: parent.width - 36px; height: 14px; text: root.data.updated; color: #89988f; font-size: 10px; overflow: elide; }
 }
 
 export component AppWindow inherits Window {
@@ -112,14 +113,12 @@ export component AppWindow inherits Window {
     }
     Image { x: 22px; y: 25px; width: 38px; height: 38px; source: @image-url("../assets/brand.svg"); }
     Text { x: 72px; y: 21px; width: parent.width - 174px; height: 31px; text: "电量岛"; font-size: 24px; font-weight: 700; color: #19392d; }
-    Text { x: 73px; y: 54px; width: parent.width - 155px; height: 18px; text: "所有设备，一眼可见"; font-size: 11px; color: #6c8274; }
+    Text { x: 73px; y: 54px; width: parent.width - 96px; height: 18px; text: root.summary; font-size: 11px; color: #6c8274; overflow: elide; }
     IconButton { x: parent.width - 92px; y: 28px; icon: @image-url("../assets/settings.svg"); label: "设置"; clicked => { root.settings-open = !root.settings-open; } }
     IconButton { x: parent.width - 52px; y: 28px; icon: @image-url("../assets/close.svg"); label: "隐藏到托盘"; clicked => { root.hide-window(); } }
 
-    Text { x: 24px; y: 91px; width: parent.width - 48px; height: 19px; text: root.summary; font-size: 11px; color: #71877a; }
-
     ScrollView {
-        x: 18px; y: 120px; width: parent.width - 36px; height: parent.height - 192px;
+        x: 18px; y: 90px; width: parent.width - 36px; height: parent.height - 150px;
         viewport-width: self.visible-width;
         viewport-height: max(self.visible-height, ceil(root.devices.length / root.columns) * 220px);
         for data[index] in root.devices: DeviceCard {
@@ -135,13 +134,13 @@ export component AppWindow inherits Window {
             border-radius: 18px; border-width: 1px; border-color: #e2eae5; background: #ffffff;
             Image { x: (parent.width - 48px) / 2; y: 40px; width: 48px; height: 48px; source: @image-url("../assets/brand.svg"); }
             Text { x: 16px; y: 106px; width: parent.width - 32px; height: 24px; text: root.busy ? "正在寻找设备…" : "还没有发现设备"; horizontal-alignment: center; font-size: 16px; font-weight: 600; color: #375546; }
-            Text { x: 20px; y: 143px; width: parent.width - 40px; height: 45px; text: "接入 ATK 鼠标或 DARKRIM 耳机接收器\n电量将在这里显示"; horizontal-alignment: center; wrap: word-wrap; font-size: 11px; color: #829387; }
+            Text { x: 20px; y: 143px; width: parent.width - 40px; height: 45px; text: "请连接设备接收器"; horizontal-alignment: center; wrap: word-wrap; font-size: 11px; color: #829387; }
         }
     }
 
-    Text { x: 24px; y: parent.height - 61px; width: parent.width - 84px; height: 18px; text: root.busy ? "正在读取设备…" : root.updated; font-size: 11px; color: #6e8275; overflow: elide; }
-    Text { x: 24px; y: parent.height - 36px; width: parent.width - 48px; height: 18px; text: root.notice == "" ? "每 60 秒更新 · 关闭窗口后继续在托盘运行" : root.notice; font-size: 10px; color: root.notice == "" ? #8a9a8f : #a36e3d; overflow: elide; }
-    IconButton { x: parent.width - 54px; y: parent.height - 71px; icon: @image-url("../assets/refresh.svg"); label: "立即刷新"; clicked => { if !root.busy { root.refresh(); } } }
+    Text { x: 24px; y: parent.height - 46px; width: parent.width - 84px; height: 18px; text: root.busy ? "正在读取设备…" : root.updated; font-size: 11px; color: #6e8275; overflow: elide; }
+    if root.notice != "": Text { x: 24px; y: parent.height - 25px; width: parent.width - 48px; height: 18px; text: root.notice; font-size: 10px; color: #a36e3d; overflow: elide; }
+    IconButton { x: parent.width - 54px; y: parent.height - 54px; icon: @image-url("../assets/refresh.svg"); label: "立即刷新"; clicked => { if !root.busy { root.refresh(); } } }
 
     if root.settings-open || root.editing: Rectangle {
         background: #18382b44;
@@ -150,19 +149,15 @@ export component AppWindow inherits Window {
 
     if root.settings-open: Rectangle {
         x: max(16px, (parent.width - 360px) / 2); y: max(24px, (parent.height - self.height) / 2);
-        width: min(parent.width - 32px, 360px); height: min(parent.height - 48px, 420px);
+        width: min(parent.width - 32px, 360px); height: 142px;
         border-radius: 18px; background: #ffffff;
+        TouchArea { clicked => {} }
         ScrollView {
         viewport-width: self.visible-width;
         VerticalLayout {
             padding: 22px; spacing: 12px;
             HorizontalLayout { Text { text: "设置"; font-size: 20px; font-weight: 600; color: #19392d; } IconButton { icon: @image-url("../assets/close.svg"); label: "关闭设置"; clicked => { root.settings-open = false; } } }
-            CheckBox { text: "登录 Windows 时启动"; checked <=> root.autostart; toggled => { root.toggle-autostart(self.checked); } }
-            Text { text: "开机自启时仅显示托盘图标。\n手动启动正常显示窗口。"; color: #71877a; font-size: 11px; wrap: word-wrap; }
-            Rectangle { height: 1px; background: #e8eeea; }
-            Text { text: "关闭窗口会隐藏到托盘。\n退出：托盘图标 → 右键 → 退出"; color: #62796a; font-size: 12px; wrap: word-wrap; }
-            Text { text: "电量岛 0.1.0 · 本地运行"; color: #8a9a8f; font-size: 10px; }
-            AboutSlint { }
+            CheckBox { text: "开机启动"; checked <=> root.autostart; toggled => { root.toggle-autostart(self.checked); } }
         }
         }
     }
@@ -171,6 +166,7 @@ export component AppWindow inherits Window {
         x: max(16px, (parent.width - 390px) / 2); y: max(18px, (parent.height - self.height) / 2);
         width: min(parent.width - 32px, 390px); height: min(parent.height - 36px, 420px);
         border-radius: 18px; background: #ffffff;
+        TouchArea { clicked => {} }
         ScrollView {
             viewport-width: self.visible-width;
             VerticalLayout {
@@ -178,15 +174,15 @@ export component AppWindow inherits Window {
                 HorizontalLayout { Text { text: "设备备注"; font-size: 20px; font-weight: 600; color: #19392d; } IconButton { icon: @image-url("../assets/close.svg"); label: "取消编辑"; clicked => { root.editing = false; } } }
                 Text { text: root.editing-name; color: #62796a; font-size: 12px; wrap: word-wrap; }
                 Text { text: root.editing-serial; color: #71877a; font-size: 11px; wrap: char-wrap; }
-                Text { text: root.editing-identity; color: #a36e3d; font-size: 10px; wrap: word-wrap; }
-                LineEdit { text <=> root.editing-alias; placeholder-text: "例如：办公鼠标（留空恢复硬件名称）"; accepted => { root.save-remark(root.editing-id, root.editing-alias); } }
-                Button { text: "保存备注"; primary: true; clicked => { root.save-remark(root.editing-id, root.editing-alias); } }
+                if root.editing-identity != "": Text { text: root.editing-identity; color: #a36e3d; font-size: 10px; wrap: word-wrap; }
+                LineEdit { text <=> root.editing-alias; placeholder-text: "例如：办公鼠标"; accepted => { root.save-remark(root.editing-id, root.editing-alias); } }
+                Button { text: "保存"; primary: true; clicked => { root.save-remark(root.editing-id, root.editing-alias); } }
                 if root.notice != "": Text { text: root.notice; color: #a36e3d; font-size: 10px; wrap: word-wrap; }
                 if root.rebind-options.length > 0: VerticalLayout {
                     spacing: 8px;
-                    Text { text: "从离线设备记录恢复备注"; font-size: 11px; color: #71877a; }
+                    Text { text: "离线记录"; font-size: 11px; color: #71877a; }
                     source-record := ComboBox { model: root.rebind-options; }
-                    Button { text: "绑定所选备注到此设备"; clicked => { root.rebind-remark(root.editing-id, source-record.current-index); } }
+                    Button { text: "恢复备注"; clicked => { root.rebind-remark(root.editing-id, source-record.current-index); } }
                 }
             }
         }

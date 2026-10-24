@@ -5,12 +5,45 @@ use std::{
     time::{Duration, Instant},
 };
 use windows_sys::Win32::{
+    Devices::HumanInterfaceDevice::HidD_GetSerialNumberString,
     Devices::{DeviceAndDriverInstallation::*, Properties::DEVPKEY_Device_ContainerId},
-    Foundation::DEVPROPKEY,
+    Foundation::{CloseHandle, DEVPROPKEY, INVALID_HANDLE_VALUE},
+    Storage::FileSystem::{CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING},
 };
 
 fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(Some(0)).collect()
+}
+
+fn raw_serial_number(info: &DeviceInfo) -> String {
+    // hidapi fills absent USB/Bluetooth serials from PnP IDs. Query the HID
+    // descriptor directly so a topology/path ID is never presented as an SN.
+    unsafe {
+        let handle = CreateFileW(
+            wide(&info.path().to_string_lossy()).as_ptr(),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            0,
+            std::ptr::null_mut(),
+        );
+        if handle == INVALID_HANDLE_VALUE {
+            return String::new();
+        }
+        let mut buffer = [0u16; 256];
+        let valid = HidD_GetSerialNumberString(
+            handle,
+            buffer.as_mut_ptr().cast(),
+            std::mem::size_of_val(&buffer) as u32,
+        );
+        CloseHandle(handle);
+        if !valid {
+            return String::new();
+        }
+        let end = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
+        String::from_utf16_lossy(&buffer[..end]).trim().into()
+    }
 }
 
 /// Windows groups all interfaces of a physical receiver using its ContainerId.
@@ -206,7 +239,7 @@ fn headset(api: &HidApi, info: &DeviceInfo) -> Result<(Option<u8>, String), Stri
 }
 
 pub fn scan() -> Result<Vec<Reading>, String> {
-    let api = HidApi::new().map_err(|e| format!("设备枚举失败：{e}"))?;
+    let api = HidApi::new().map_err(|_| "暂时无法读取设备，请稍后刷新".to_string())?;
     let mut groups: BTreeMap<String, Vec<&DeviceInfo>> = BTreeMap::new();
     for info in api.device_list().filter(|d| supported(d)) {
         groups.entry(container_id(info)).or_default().push(info);
@@ -224,7 +257,7 @@ pub fn scan() -> Result<Vec<Reading>, String> {
             }
             .into(),
             hardware_name: info.product_string().unwrap_or("未提供硬件名称").into(),
-            serial: info.serial_number().unwrap_or_default().trim().into(),
+            serial: raw_serial_number(info),
             vid: info.vendor_id(),
             pid: info.product_id(),
             battery: None,
@@ -236,7 +269,13 @@ pub fn scan() -> Result<Vec<Reading>, String> {
                     reading.battery = Some(level);
                     reading.message = "已连接".into();
                 }
-                Err(error) => reading.message = error,
+                Err(error) => {
+                    reading.message = if error.contains("未响应") {
+                        error
+                    } else {
+                        "读取失败，请重新连接设备后刷新".into()
+                    }
+                }
             }
         } else {
             match headset(&api, info) {
@@ -252,7 +291,7 @@ pub fn scan() -> Result<Vec<Reading>, String> {
                     }
                     .into();
                 }
-                Err(error) => reading.message = error,
+                Err(_) => reading.message = "读取失败，请重新连接设备后刷新".into(),
             }
         }
         result.push(reading);

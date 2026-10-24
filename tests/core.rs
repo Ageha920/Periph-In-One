@@ -163,6 +163,14 @@ fn weak_id_cannot_reuse_remarks_after_restart_or_observed_disconnect() {
 }
 
 #[test]
+fn product_name_is_not_a_reliable_unique_serial() {
+    let devices = model::merge_readings(&[], vec![reading("port", "Receiver", Some(35))], 1);
+    assert!(devices[0].saved.identity_conflict);
+    assert!(devices[0].saved.id.starts_with("local:"));
+    assert_eq!(devices[0].saved.serial, "Receiver");
+}
+
+#[test]
 fn rebind_moves_a_remark_only_after_explicit_selection() {
     let mut devices = model::merge_readings(&[], vec![reading("a", "A", None)], 1);
     devices[0].saved.alias = "保留的备注".into();
