@@ -31,6 +31,7 @@ pub enum Action {
     Remark(String, String),
     Rebind(String, usize),
     Copy(String),
+    Delete(String),
     Saved(u64, Result<(), String>),
     Autostart(bool),
     Quit,
@@ -128,6 +129,7 @@ impl App {
             "备注已保存"
                 | "备注已重新绑定"
                 | "接收器序列号已复制"
+                | "离线记录已删除"
                 | "已启用开机自启"
                 | "已关闭开机自启"
         );
@@ -197,6 +199,7 @@ impl App {
                     } else {
                         format!("接收器 SN：{}", saved.serial).into()
                     },
+                    has_serial: !saved.serial.is_empty(),
                     usb_id: format!("{:04X}:{:04X}", saved.vid, saved.pid).into(),
                     kind: saved.kind.clone().into(),
                     percentage: saved
@@ -328,6 +331,7 @@ impl App {
                 self.ui.set_mini_mode(true);
                 self.ui.set_settings_open(false);
                 self.ui.set_editing(false);
+                self.ui.set_deleting(false);
                 let size = slint::LogicalSize::new(280.0, self.ui.get_mini_height());
                 if let Err(error) =
                     self.presenter
@@ -352,6 +356,7 @@ impl App {
                 self.save_size();
                 self.ui.set_settings_open(false);
                 self.ui.set_editing(false);
+                self.ui.set_deleting(false);
                 let _ = self.presenter.hide(&self.ui);
             }
             Action::SaveSize => self.save_size(),
@@ -428,6 +433,23 @@ impl App {
                     match platform::copy_text(&device.saved.serial) {
                         Ok(()) => self.notice("接收器序列号已复制"),
                         Err(error) => self.notice(error),
+                    }
+                }
+            }
+            Action::Delete(id) => {
+                let previous = self.devices.clone();
+                match model::remove_offline(&mut self.devices, &id) {
+                    Ok(()) => {
+                        if self.persist("离线记录已删除") {
+                            self.ui.set_deleting(false);
+                        } else {
+                            self.devices = previous;
+                        }
+                        self.update();
+                    }
+                    Err(error) => {
+                        self.ui.set_deleting(false);
+                        self.notice(error);
                     }
                 }
             }
@@ -624,6 +646,7 @@ pub fn run() -> Result<(), String> {
         }
     });
     ui.on_copy_serial(|id| post(Action::Copy(id.into())));
+    ui.on_delete_device(|id| post(Action::Delete(id.into())));
     ui.on_toggle_autostart(|enabled| post(Action::Autostart(enabled)));
     ui.window().on_close_requested(|| {
         post(Action::Hide);
@@ -644,20 +667,9 @@ pub fn run() -> Result<(), String> {
     let worker = thread::Builder::new()
         .name("battery-reader".into())
         .spawn(move || {
-            let session = format!(
-                "{}-{}",
-                std::process::id(),
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos()
-            );
-            let mut tracker = model::SessionTracker::new(session);
             loop {
                 post(Action::ReadingStarted);
-                post(Action::Readings(
-                    devices::scan().map(|rows| tracker.track(rows)),
-                ));
+                post(Action::Readings(devices::scan()));
                 match receiver.recv_timeout(Duration::from_secs(60)) {
                     Ok(WorkerCommand::Stop) | Err(RecvTimeoutError::Disconnected) => break,
                     Ok(WorkerCommand::Refresh) | Err(RecvTimeoutError::Timeout) => {}

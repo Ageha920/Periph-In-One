@@ -121,45 +121,109 @@ fn absent_serial_does_not_merge_same_model_receivers() {
 }
 
 #[test]
-fn weak_id_cannot_reuse_remarks_after_restart_or_observed_disconnect() {
-    let mut tracker = model::SessionTracker::new("run-a".into());
-    let first = model::merge_readings(
-        &[],
-        tracker.track(vec![reading("same-port", "", Some(50))]),
-        1,
-    );
+fn local_identity_and_remark_survive_restart_and_reconnect() {
+    let first = model::merge_readings(&[], vec![reading("same-port", "", Some(50))], 1);
     let mut saved: Vec<_> = first.iter().map(|d| d.saved.clone()).collect();
-    saved[0].alias = "旧接收器".into();
-    let continuous = model::merge_readings(
+    saved[0].alias = "办公鼠标".into();
+    // Serialize/load just as two separate processes do.
+    let saved: Vec<SavedDevice> =
+        serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+    let offline = model::merge_readings(&saved, vec![], 2);
+    let saved: Vec<_> = offline.into_iter().map(|d| d.saved).collect();
+    let restarted = model::merge_readings(&saved, vec![reading("same-port", "", Some(53))], 3);
+    assert_eq!(restarted.len(), 1);
+    assert!(restarted[0].present);
+    assert_eq!(restarted[0].saved.alias, "办公鼠标");
+    assert_eq!(restarted[0].saved.battery, Some(53));
+}
+
+fn legacy_record(session: &str, physical: &str, alias: &str, time: u64) -> SavedDevice {
+    SavedDevice {
+        id: format!(
+            "local:{}",
+            serde_json::to_string(&(0x373b, 0x1216, format!("{session}:1:{physical}"))).unwrap()
+        ),
+        vid: 0x373b,
+        pid: 0x1216,
+        serial: "Receiver".into(),
+        hardware_name: "Receiver".into(),
+        alias: alias.into(),
+        last_success: Some(time),
+        battery: Some(42),
+        identity_conflict: true,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn migrates_repeated_launch_records_without_losing_remark_or_last_reading() {
+    let saved = vec![
+        legacy_record("123-1700000000", "container-a", "办公鼠标", 10),
+        legacy_record("456-1800000000", "container-a", "", 20),
+        legacy_record("789-1900000000", "container-b", "另一台", 30),
+    ];
+    let devices = model::merge_readings(&saved, vec![reading("container-a", "Receiver", None)], 40);
+    assert_eq!(devices.len(), 2);
+    let active = devices.iter().find(|d| d.present).unwrap();
+    assert_eq!(active.saved.alias, "办公鼠标");
+    assert_eq!(active.saved.last_success, Some(20));
+    assert_eq!(active.saved.battery, Some(42));
+    assert_eq!(active.saved.physical_id, "container-a");
+    let saved: Vec<_> = devices.into_iter().map(|d| d.saved).collect();
+    let later = model::merge_readings(
         &saved,
-        tracker.track(vec![reading("same-port", "", Some(51))]),
-        2,
+        vec![reading("container-a", "Receiver", Some(50))],
+        50,
     );
-    assert_eq!(continuous.len(), 1);
-    tracker.track(vec![]);
-    let reconnected = model::merge_readings(
-        &saved,
-        tracker.track(vec![reading("same-port", "", Some(52))]),
-        3,
-    );
-    assert!(
-        reconnected
-            .iter()
-            .filter(|d| d.present)
-            .all(|d| d.saved.alias.is_empty())
-    );
-    let mut restarted = model::SessionTracker::new("run-b".into());
-    let after_restart = model::merge_readings(
-        &saved,
-        restarted.track(vec![reading("same-port", "", Some(53))]),
-        4,
-    );
-    assert!(
-        after_restart
-            .iter()
-            .filter(|d| d.present)
-            .all(|d| d.saved.alias.is_empty())
-    );
+    assert_eq!(later.len(), 2);
+    assert_eq!(later.iter().filter(|d| d.present).count(), 1);
+}
+
+#[test]
+fn conflicting_legacy_remarks_are_preserved_for_manual_review() {
+    let saved = vec![
+        legacy_record("1-100", "a", "甲", 1),
+        legacy_record("2-200", "a", "乙", 2),
+    ];
+    let devices = model::merge_readings(&saved, vec![reading("a", "Receiver", Some(50))], 3);
+    assert_eq!(devices.len(), 2);
+    assert!(devices.iter().any(|d| d.saved.alias == "甲"));
+    assert!(devices.iter().any(|d| d.saved.alias == "乙"));
+}
+
+#[test]
+fn offline_deletion_does_not_allow_present_or_nonresponding_devices() {
+    let mut devices = model::merge_readings(&[], vec![reading("a", "A", None)], 1);
+    let id = devices[0].saved.id.clone();
+    assert!(model::remove_offline(&mut devices, &id).is_err());
+    let saved: Vec<_> = devices.into_iter().map(|d| d.saved).collect();
+    let mut devices = model::merge_readings(&saved, vec![], 2);
+    model::remove_offline(&mut devices, &id).unwrap();
+    assert!(devices.is_empty());
+    assert!(model::remove_offline(&mut devices, &id).is_err());
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("config/settings.json");
+    Config {
+        devices: devices.into_iter().map(|d| d.saved).collect(),
+        ..Config::default()
+    }
+    .save(&path)
+    .unwrap();
+    let restored = Config::load(&path).unwrap();
+    assert!(model::merge_readings(&restored.devices, vec![], 3).is_empty());
+}
+
+#[test]
+fn temporarily_missing_descriptor_does_not_create_a_duplicate() {
+    let first = model::merge_readings(&[], vec![reading("a", "SN-A", Some(70))], 1);
+    let saved: Vec<_> = first.into_iter().map(|d| d.saved).collect();
+    let unavailable = model::merge_readings(&saved, vec![reading("a", "", None)], 2);
+    assert_eq!(unavailable.len(), 1);
+    assert_eq!(unavailable[0].saved.serial, "SN-A");
+    let saved: Vec<_> = unavailable.into_iter().map(|d| d.saved).collect();
+    let restored = model::merge_readings(&saved, vec![reading("a", "SN-A", Some(71))], 3);
+    assert_eq!(restored.len(), 1);
+    assert_eq!(restored[0].saved.battery, Some(71));
 }
 
 #[test]

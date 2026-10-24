@@ -5,6 +5,7 @@ export struct DeviceRow {
     title: string,
     hardware-name: string,
     serial: string,
+    has-serial: bool,
     usb-id: string,
     kind: string,
     percentage: string,
@@ -37,6 +38,7 @@ component DeviceCard inherits Rectangle {
     private property <bool> show-hardware-name: root.data.alias != "" && root.data.alias != root.data.hardware-name;
     callback edit();
     callback copy-serial();
+    callback delete-device();
     height: 208px;
     border-radius: 18px;
     border-width: 1px;
@@ -48,7 +50,7 @@ component DeviceCard inherits Rectangle {
         border-radius: 12px; background: root.data.present ? #eff5f2 : #f4f5f5;
         Image { x: 8px; y: 8px; width: 27px; height: 27px; source: root.data.kind == "mouse" ? @image-url("../assets/mouse.svg") : @image-url("../assets/headset.svg"); opacity: root.data.present ? 1 : 0.45; }
     }
-    Text { x: 71px; y: 17px; width: parent.width - 120px; height: 25px; text: root.data.title; font-size: 17px; font-weight: 600; color: #19392d; overflow: elide; }
+    Text { x: 71px; y: 17px; width: parent.width - (root.data.present ? 120px : 152px); height: 25px; text: root.data.title; font-size: 17px; font-weight: 600; color: #19392d; overflow: elide; }
     Text { x: 71px; y: 43px; width: parent.width - 100px; height: 18px; text: root.data.kind == "mouse" ? "无线鼠标 · 2.4G" : "无线耳机 · 2.4G"; font-size: 11px; color: #71857a; overflow: elide; }
     Rectangle {
         x: parent.width - 40px; y: 14px; width: 26px; height: 26px; border-radius: 7px;
@@ -56,6 +58,11 @@ component DeviceCard inherits Rectangle {
         Image { x: 5px; y: 5px; width: 16px; height: 16px; source: @image-url("../assets/edit.svg"); }
         edit-touch := TouchArea { mouse-cursor: pointer; clicked => { root.edit(); } }
         accessible-role: button; accessible-label: "编辑备注"; accessible-action-default => { root.edit(); }
+    }
+    if !root.data.present: IconButton {
+        x: parent.width - 74px; y: 11px;
+        icon: @image-url("../assets/delete.svg"); label: "删除离线记录";
+        clicked => { root.delete-device(); }
     }
 
     Text { x: 18px; y: 75px; width: 140px; height: 45px; text: root.data.percentage; font-size: 35px; font-weight: 500; color: root.data.fresh ? #19392d : #8f9e96; }
@@ -65,8 +72,17 @@ component DeviceCard inherits Rectangle {
         Rectangle { x: 0px; y: 0px; width: parent.width * root.data.level; height: parent.height; border-radius: 3px; background: !root.data.fresh ? #bac8bf : root.data.level < 0.3 ? #cd6854 : root.data.level < 0.6 ? #c19a43 : #00896c; }
     }
     if root.show-hardware-name: Text { x: 18px; y: 140px; width: parent.width - 36px; height: 17px; text: root.data.hardware-name; color: #62776b; font-size: 11px; overflow: elide; }
-    Text { x: 18px; y: root.show-hardware-name ? 162px : 143px; width: parent.width - 36px; height: 17px; text: root.data.serial; color: #7b8c82; font-size: 10px; overflow: elide; }
-    TouchArea { x: 16px; y: root.show-hardware-name ? 159px : 140px; width: parent.width - 32px; height: 23px; mouse-cursor: pointer; clicked => { root.copy-serial(); } }
+    HorizontalLayout {
+        x: 18px; y: root.show-hardware-name ? 159px : 140px;
+        width: parent.width - 36px; height: 24px;
+        spacing: 4px; alignment: start;
+        Text { text: root.data.serial; color: #7b8c82; font-size: 10px; overflow: elide; vertical-alignment: center; horizontal-stretch: 0; max-width: parent.width - (root.data.has-serial ? 28px : 0px); }
+        if root.data.has-serial: IconButton {
+            width: 24px; height: 24px;
+            icon: @image-url("../assets/copy.svg"); label: "复制接收器序列号";
+            clicked => { root.copy-serial(); }
+        }
+    }
     Text { x: 18px; y: root.show-hardware-name ? 185px : 171px; width: parent.width - 36px; height: 14px; text: root.data.updated; color: #89988f; font-size: 10px; overflow: elide; }
 }
 
@@ -161,6 +177,9 @@ export component AppWindow inherits Window {
     in-out property <bool> settings-open;
     in-out property <bool> autostart;
     in-out property <bool> editing;
+    in-out property <bool> deleting;
+    in-out property <string> deleting-id;
+    in-out property <string> deleting-name;
     in-out property <string> editing-id;
     in-out property <string> editing-name;
     in-out property <string> editing-alias;
@@ -176,6 +195,7 @@ export component AppWindow inherits Window {
     callback save-remark(string, string);
     callback rebind-remark(string, int);
     callback copy-serial(string);
+    callback delete-device(string);
     callback toggle-autostart(bool);
 
     if root.mini-mode: MiniPanel {
@@ -216,6 +236,13 @@ export component AppWindow inherits Window {
                 data: data;
                 edit => { root.edit-device(data.id); }
                 copy-serial => { root.copy-serial(data.id); }
+                delete-device => {
+                    root.deleting-id = data.id;
+                    root.deleting-name = data.title;
+                    root.settings-open = false;
+                    root.editing = false;
+                    root.deleting = true;
+                }
             }
             if root.devices.length == 0: Rectangle {
                 width: parent.width; height: 220px;
@@ -230,9 +257,9 @@ export component AppWindow inherits Window {
         if root.notice != "": Text { x: 24px; y: parent.height - 25px; width: parent.width - 48px; height: 18px; text: root.notice; font-size: 10px; color: #a36e3d; overflow: elide; }
         IconButton { x: parent.width - 54px; y: parent.height - 54px; icon: @image-url("../assets/refresh.svg"); label: "立即刷新"; clicked => { if !root.busy { root.refresh(); } } }
 
-        if root.settings-open || root.editing: Rectangle {
+        if root.settings-open || root.editing || root.deleting: Rectangle {
             background: #18382b44;
-            TouchArea { clicked => { root.settings-open = false; root.editing = false; } }
+            TouchArea { clicked => { root.settings-open = false; root.editing = false; root.deleting = false; } }
         }
 
         if root.settings-open: Rectangle {
@@ -272,6 +299,23 @@ export component AppWindow inherits Window {
                         source-record := ComboBox { model: root.rebind-options; }
                         Button { text: "恢复备注"; clicked => { root.rebind-remark(root.editing-id, source-record.current-index); } }
                     }
+                }
+            }
+        }
+
+        if root.deleting: Rectangle {
+            x: max(16px, (parent.width - 360px) / 2); y: (parent.height - self.height) / 2;
+            width: min(parent.width - 32px, 360px); height: 170px;
+            border-radius: 18px; background: #ffffff;
+            TouchArea { clicked => {} }
+            VerticalLayout {
+                padding: 22px; spacing: 12px;
+                Text { text: "删除离线记录？"; font-size: 18px; font-weight: 600; color: #19392d; }
+                Text { text: root.deleting-name; color: #62796a; overflow: elide; }
+                HorizontalLayout {
+                    spacing: 12px;
+                    Button { text: "取消"; clicked => { root.deleting = false; } }
+                    Button { text: "删除"; clicked => { root.delete-device(root.deleting-id); } }
                 }
             }
         }

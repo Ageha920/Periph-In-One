@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 #[serde(default)]
 pub struct SavedDevice {
     pub id: String,
+    pub physical_id: String,
     pub kind: String,
     pub hardware_name: String,
     pub serial: String,
@@ -36,41 +37,6 @@ pub struct Device {
     pub message: String,
 }
 
-/// Scope weak identifiers to one continuous observation in one application run.
-/// A Windows ContainerId without a serial can be recycled for another receiver.
-pub struct SessionTracker {
-    session: String,
-    next: u64,
-    active: HashMap<(u16, u16, String), u64>,
-}
-
-impl SessionTracker {
-    pub fn new(session: String) -> Self {
-        Self {
-            session,
-            next: 0,
-            active: HashMap::new(),
-        }
-    }
-
-    pub fn track(&mut self, mut readings: Vec<Reading>) -> Vec<Reading> {
-        let current: HashSet<_> = readings
-            .iter()
-            .map(|r| (r.vid, r.pid, r.physical_id.clone()))
-            .collect();
-        self.active.retain(|key, _| current.contains(key));
-        for reading in &mut readings {
-            let key = (reading.vid, reading.pid, reading.physical_id.clone());
-            let epoch = *self.active.entry(key).or_insert_with(|| {
-                self.next += 1;
-                self.next
-            });
-            reading.physical_id = format!("{}:{epoch}:{}", self.session, reading.physical_id);
-        }
-        readings
-    }
-}
-
 pub fn serial_key(vid: u16, pid: u16, serial: &str) -> String {
     // JSON tuple avoids ambiguous concatenations, and does not normalize case.
     format!("sn:{}", serde_json::to_string(&(vid, pid, serial)).unwrap())
@@ -78,6 +44,99 @@ pub fn serial_key(vid: u16, pid: u16, serial: &str) -> String {
 
 fn name_used_as_serial(serial: &str, name: &str) -> bool {
     !serial.is_empty() && serial.trim().eq_ignore_ascii_case(name.trim())
+}
+
+fn saved_physical_id(saved: &SavedDevice) -> Option<String> {
+    if !saved.physical_id.is_empty() {
+        return Some(saved.physical_id.clone());
+    }
+    // Migrate v0.1.2 local:[vid,pid,"pid-nanoseconds:epoch:ContainerId"].
+    // Read the tuple rather than matching names/VID/PID alone; separate
+    // receivers of the same model must never collapse into one record.
+    let (vid, pid, physical): (u16, u16, String) =
+        serde_json::from_str(saved.id.strip_prefix("local:")?).ok()?;
+    if (vid, pid) != (saved.vid, saved.pid) {
+        return None;
+    }
+    if let Some((session, tail)) = physical.split_once(':')
+        && session.split_once('-').is_some_and(|(pid, time)| {
+            !pid.is_empty()
+                && !time.is_empty()
+                && pid.bytes().all(|c| c.is_ascii_digit())
+                && time.bytes().all(|c| c.is_ascii_digit())
+        })
+        && let Some((epoch, identity)) = tail.split_once(':')
+        && !epoch.is_empty()
+        && epoch.bytes().all(|c| c.is_ascii_digit())
+    {
+        return Some(identity.into());
+    }
+    Some(physical)
+}
+
+fn reconcile_record(devices: &mut Vec<Device>, reading: &Reading, id: &str) -> usize {
+    let candidates: Vec<_> = devices
+        .iter()
+        .enumerate()
+        .filter_map(|(i, device)| {
+            let saved = &device.saved;
+            (saved.id == id
+                || (!device.present
+                    && saved.id.starts_with("local:")
+                    && (saved.vid, saved.pid) == (reading.vid, reading.pid)
+                    && (saved.serial.is_empty()
+                        || reading.serial.is_empty()
+                        || saved.serial == reading.serial
+                        || name_used_as_serial(&saved.serial, &saved.hardware_name))
+                    && saved_physical_id(saved).as_deref() == Some(&reading.physical_id)))
+            .then_some(i)
+        })
+        .collect();
+    let Some(index) = candidates
+        .iter()
+        .copied()
+        .max_by_key(|&i| (devices[i].saved.id == id, devices[i].saved.last_success))
+    else {
+        devices.push(Device {
+            saved: SavedDevice {
+                id: id.into(),
+                ..Default::default()
+            },
+            present: false,
+            fresh: false,
+            message: String::new(),
+        });
+        return devices.len() - 1;
+    };
+    let mut merged = devices[index].clone();
+    merged.saved.id = id.into();
+    if merged.saved.alias.is_empty()
+        && let Some(source) = candidates
+            .iter()
+            .copied()
+            .filter(|&i| !devices[i].saved.alias.is_empty())
+            .max_by_key(|&i| devices[i].saved.last_success)
+    {
+        merged.saved.alias = devices[source].saved.alias.clone();
+    }
+    let mut remove = Vec::new();
+    for i in candidates {
+        let saved = &devices[i].saved;
+        // Preserve a distinct user remark for explicit review/rebinding.
+        if !saved.alias.is_empty() && saved.alias != merged.saved.alias {
+            continue;
+        }
+        if saved.last_success > merged.saved.last_success {
+            merged.saved.last_success = saved.last_success;
+            merged.saved.battery = saved.battery;
+        }
+        remove.push(i);
+    }
+    for i in remove.into_iter().rev() {
+        devices.remove(i);
+    }
+    devices.push(merged);
+    devices.len() - 1
 }
 
 pub fn merge_readings(saved: &[SavedDevice], readings: Vec<Reading>, now: u64) -> Vec<Device> {
@@ -123,10 +182,29 @@ pub fn merge_readings(saved: &[SavedDevice], readings: Vec<Reading>, now: u64) -
         let serial_id = serial_key(reading.vid, reading.pid, &reading.serial);
         let conflict = name_used_as_serial(&reading.serial, &reading.hardware_name)
             || counts.get(&serial_id).is_some_and(|n| *n > 1)
-            || devices
+            || devices.iter().any(|d| {
+                d.saved.vid == reading.vid
+                    && d.saved.pid == reading.pid
+                    && d.saved.serial == reading.serial
+                    && d.saved.identity_conflict
+            });
+        let retained_serial = if reading.serial.is_empty() {
+            devices
                 .iter()
-                .any(|d| d.saved.id == serial_id && d.saved.identity_conflict);
-        let id = if reading.serial.is_empty() || conflict {
+                .find(|d| {
+                    !d.present
+                        && !d.saved.identity_conflict
+                        && !d.saved.serial.is_empty()
+                        && (d.saved.vid, d.saved.pid) == (reading.vid, reading.pid)
+                        && saved_physical_id(&d.saved).as_deref() == Some(&reading.physical_id)
+                })
+                .map(|d| d.saved.serial.clone())
+        } else {
+            None
+        };
+        let id = if let Some(serial) = &retained_serial {
+            serial_key(reading.vid, reading.pid, serial)
+        } else if reading.serial.is_empty() || conflict {
             format!(
                 "local:{}",
                 serde_json::to_string(&(reading.vid, reading.pid, &reading.physical_id)).unwrap()
@@ -134,27 +212,14 @@ pub fn merge_readings(saved: &[SavedDevice], readings: Vec<Reading>, now: u64) -
         } else {
             serial_id
         };
-        let index = devices
-            .iter()
-            .position(|d| d.saved.id == id)
-            .unwrap_or_else(|| {
-                devices.push(Device {
-                    saved: SavedDevice {
-                        id: id.clone(),
-                        ..Default::default()
-                    },
-                    present: false,
-                    fresh: false,
-                    message: String::new(),
-                });
-                devices.len() - 1
-            });
+        let index = reconcile_record(&mut devices, &reading, &id);
         let device = &mut devices[index];
+        device.saved.physical_id = reading.physical_id;
         device.saved.kind = reading.kind;
         if !reading.hardware_name.is_empty() {
             device.saved.hardware_name = reading.hardware_name;
         }
-        device.saved.serial = reading.serial;
+        device.saved.serial = retained_serial.unwrap_or(reading.serial);
         device.saved.vid = reading.vid;
         device.saved.pid = reading.pid;
         device.saved.identity_conflict |= conflict;
@@ -167,6 +232,18 @@ pub fn merge_readings(saved: &[SavedDevice], readings: Vec<Reading>, now: u64) -
         }
     }
     devices
+}
+
+pub fn remove_offline(devices: &mut Vec<Device>, id: &str) -> Result<(), &'static str> {
+    let index = devices
+        .iter()
+        .position(|d| d.saved.id == id)
+        .ok_or("设备记录已不存在")?;
+    if devices[index].present {
+        return Err("设备已连接，无法删除");
+    }
+    devices.remove(index);
+    Ok(())
 }
 
 /// Explicitly move an orphaned remark to a receiver selected by the user.
