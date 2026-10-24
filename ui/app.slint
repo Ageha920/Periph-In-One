@@ -115,6 +115,7 @@ component MiniPanel inherits Rectangle {
             Rectangle {
                 x: 26px; y: 42px; width: parent.width - 26px; height: 3px; border-radius: 1.5px; background: #e5e5e9;
                 Rectangle {
+                    x: 0px; y: 0px;
                     width: parent.width * data.level; height: parent.height; border-radius: 1.5px;
                     background: !data.fresh ? #c5c5cc : data.level < 0.3 ? #e47e35 : #27272a;
                 }
