@@ -1,6 +1,6 @@
 [package]
 name = "periph-in-one"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 description = "A portable Windows peripheral battery monitor"
 build = "build.rs"

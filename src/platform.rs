@@ -50,20 +50,20 @@ pub fn initialize_taskbar() -> Result<(), String> {
 fn application_icons(dpi: u32) -> Result<(HICON, HICON), String> {
     unsafe {
         let module = GetModuleHandleW(null());
-        let load = |metric| {
+        let load = |width, height| {
             LoadImageW(
                 module,
-                1usize as *const u16,
+                std::ptr::without_provenance(1),
                 IMAGE_ICON,
-                GetSystemMetricsForDpi(metric, dpi),
-                GetSystemMetricsForDpi(metric + 1, dpi),
+                GetSystemMetricsForDpi(width, dpi),
+                GetSystemMetricsForDpi(height, dpi),
                 LR_SHARED,
             ) as HICON
         };
         // Resource 1 is the multi-resolution ICO embedded by winresource.
         // Shared module resources outlive HWND destruction and need no DestroyIcon.
-        let small = load(SM_CXSMICON);
-        let large = load(SM_CXICON);
+        let small = load(SM_CXSMICON, SM_CYSMICON);
+        let large = load(SM_CXICON, SM_CYICON);
         if small.is_null() || large.is_null() {
             return Err("无法加载应用图标，请重新下载软件".into());
         }

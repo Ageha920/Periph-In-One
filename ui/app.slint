@@ -260,13 +260,13 @@ export component AppWindow inherits Window {
 
         if root.editing: Rectangle {
             x: max(16px, (parent.width - 390px) / 2); y: max(18px, (parent.height - self.height) / 2);
-            width: min(parent.width - 32px, 390px); height: min(parent.height - 36px, 420px);
+            width: min(parent.width - 32px, 390px); height: min(parent.height - 36px, root.rebind-options.length > 0 ? 480px : 356px);
             border-radius: 16px; background: #ffffff;
             TouchArea { clicked => {} }
             ScrollView {
                 viewport-width: self.visible-width;
                 VerticalLayout {
-                    padding: 22px; spacing: 12px;
+                    padding: 22px; spacing: 12px; alignment: start;
                     HorizontalLayout { Text { text: "设备备注"; font-size: 20px; font-weight: 600; color: #18181b; } IconButton { icon: @image-url("../assets/close.svg"); label: "取消编辑"; clicked => { root.editing = false; } } }
                     HorizontalLayout {
                         spacing: 8px;
@@ -284,8 +284,8 @@ export component AppWindow inherits Window {
                         IconButton { icon: @image-url("../assets/copy.svg"); label: "复制 VID/PID"; clicked => { root.copy-usb-id(root.editing-id); } }
                     }
                     if root.editing-identity != "": Text { text: root.editing-identity; color: #bb6425; font-size: 10px; wrap: word-wrap; }
-                    LineEdit { text <=> root.editing-alias; placeholder-text: "例如：办公鼠标"; accepted => { root.save-remark(root.editing-id, root.editing-alias); } }
-                    Button { text: "保存"; primary: false; clicked => { root.save-remark(root.editing-id, root.editing-alias); } }
+                    LineEdit { min-height: 36px; max-height: 36px; text <=> root.editing-alias; placeholder-text: "例如：办公鼠标"; accepted => { root.save-remark(root.editing-id, root.editing-alias); } }
+                    Button { min-height: 36px; max-height: 36px; text: "保存"; primary: false; clicked => { root.save-remark(root.editing-id, root.editing-alias); } }
                     if root.notice != "": Text { text: root.notice; color: #bb6425; font-size: 10px; wrap: word-wrap; }
                     if root.rebind-options.length > 0: VerticalLayout {
                         spacing: 8px;
