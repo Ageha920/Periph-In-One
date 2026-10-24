@@ -147,6 +147,10 @@ fn supported(info: &DeviceInfo) -> bool {
             && info.product_id() == 0xfa09
             && info.usage_page() == 0xff02
             && info.usage() == 2)
+        // Zikway/BIGBIG WON controllers: the vendor interface keeps usage page
+        // FF7A across firmware personalities (2104 linked, 2106 idle), so the
+        // PID is deliberately not pinned.
+        || (info.vendor_id() == 0x413d && info.usage_page() == 0xff7a && info.usage() == 1)
 }
 
 #[derive(Debug, Serialize)]
@@ -457,6 +461,32 @@ fn keyboard(info: &DeviceInfo) -> Result<(Option<u8>, String), String> {
     Ok((None, name))
 }
 
+/// BIGBIG WON controllers (GALE 烈风 family and other Zikway models). The
+/// vendor interface answers GetDevicePowerInfo only while the controller is
+/// linked and running its composite gamepad personality; asleep or unlinked
+/// devices enumerate but stay silent.
+fn gamepad(api: &HidApi, info: &DeviceInfo) -> Result<u8, String> {
+    let (reader, writer) = open_pair(api, info)?;
+    let mut buffer = [0; 256];
+    for _ in 0..3 {
+        drain(&reader);
+        send(&writer, &protocol::bigbigwon_request())?;
+        let end = Instant::now() + Duration::from_millis(650);
+        while Instant::now() < end {
+            let n = reader
+                .read_timeout(&mut buffer, 120)
+                .map_err(|e| e.to_string())?;
+            if n == 0 {
+                continue;
+            }
+            if let Some(level) = protocol::bigbigwon_battery(&buffer[..n]) {
+                return Ok(level);
+            }
+        }
+    }
+    Err("手柄未响应，请唤醒手柄后刷新".into())
+}
+
 pub fn scan() -> Result<Vec<Reading>, String> {
     let api = HidApi::new().map_err(|_| "暂时无法读取设备，请稍后刷新".to_string())?;
     let mut result = Vec::new();
@@ -469,6 +499,8 @@ pub fn scan() -> Result<Vec<Reading>, String> {
                 "mouse"
             } else if vendor == 0x3554 {
                 "keyboard"
+            } else if vendor == 0x413d {
+                "gamepad"
             } else {
                 "headset"
             }
@@ -510,6 +542,20 @@ pub fn scan() -> Result<Vec<Reading>, String> {
                     .into();
                 }
                 Err(_) => reading.message = "读取失败，请重新连接设备后刷新".into(),
+            }
+        } else if vendor == 0x413d {
+            match gamepad(&api, info) {
+                Ok(level) => {
+                    reading.battery = Some(level);
+                    reading.message = "已连接".into();
+                }
+                Err(error) => {
+                    reading.message = if error.contains("未响应") {
+                        error
+                    } else {
+                        "读取失败，请重新连接设备后刷新".into()
+                    }
+                }
             }
         } else {
             match headset(&api, info) {

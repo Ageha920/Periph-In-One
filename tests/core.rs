@@ -320,3 +320,53 @@ fn config_roundtrip_atomic_replacement_and_bad_file_detection() {
     assert!(Config::load(&path).is_err());
     assert_eq!(std::fs::read(&path).unwrap(), b"{broken");
 }
+
+#[test]
+fn bigbigwon_request_frame_matches_verified_wiring() {
+    let report = bigbigwon_request();
+    assert_eq!(report.len(), 65);
+    assert_eq!(&report[..5], &[0x00, 0xa5, 0x04, 0x04, 0xad]);
+    assert!(report[5..].iter().all(|&byte| byte == 0));
+}
+
+#[test]
+fn bigbigwon_battery_parses_verified_power_reply() {
+    // Captured replies: 88%/90% alternation from a near-full GALE controller.
+    let reply = [0xa5, 0x06, 0x04, 0x58, 0x00, 0x07];
+    assert_eq!(bigbigwon_battery(&reply), Some(88));
+    let reply = [0xa5, 0x06, 0x04, 0x5a, 0x00, 0x09];
+    assert_eq!(bigbigwon_battery(&reply), Some(90));
+    // The trailing zeros of the 64-byte hidapi report must not disturb parsing.
+    let mut padded = [0u8; 64];
+    padded[..6].copy_from_slice(&[0xa5, 0x06, 0x04, 0x58, 0x00, 0x07]);
+    assert_eq!(bigbigwon_battery(&padded), Some(88));
+}
+
+#[test]
+fn bigbigwon_battery_rejects_bad_frames() {
+    // Broken additive checksum.
+    assert_eq!(
+        bigbigwon_battery(&[0xa5, 0x06, 0x04, 0x58, 0x00, 0x08]),
+        None
+    );
+    // Wrong command echo.
+    assert_eq!(
+        bigbigwon_battery(&[0xa5, 0x06, 0x0b, 0x36, 0xeb, 0x00]),
+        None
+    );
+    // Level beyond 100%.
+    assert_eq!(
+        bigbigwon_battery(&[0xa5, 0x06, 0x04, 0xc8, 0x00, 0x77]),
+        None
+    );
+    // Truncated and wrong-magic frames.
+    assert_eq!(bigbigwon_battery(&[0xa5, 0x06, 0x04]), None);
+    assert_eq!(
+        bigbigwon_battery(&[0x13, 0x06, 0x04, 0x58, 0x00, 0x07]),
+        None
+    );
+    // Length byte larger than the buffer.
+    assert_eq!(bigbigwon_battery(&[0xa5, 0xff, 0x04, 0x58]), None);
+    // Zero length byte must not underflow.
+    assert_eq!(bigbigwon_battery(&[0xa5, 0x00]), None);
+}

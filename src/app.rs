@@ -103,6 +103,8 @@ fn fallback_name(device: &Device) -> &str {
         "ATK 无线鼠标"
     } else if device.saved.kind == "keyboard" {
         "KZZI 无线键盘"
+    } else if device.saved.kind == "gamepad" {
+        "BIGBIG WON 无线手柄"
     } else {
         "DARKRIM 无线耳机"
     }

@@ -151,3 +151,32 @@ pub fn kzzi_model_name(psd: &[u8]) -> Option<&'static str> {
         _ => return None,
     })
 }
+
+/// BIGBIG WON (Zikway) controller short frames over the FF7A vendor interface.
+/// The wire report is 65 bytes with report id 0; the payload starts with 0xA5,
+/// byte 1 is the total frame length including A5 and the trailing additive sum
+/// of every preceding byte. GetDevicePowerInfo (A5 04 04) answers with
+/// A5 <len> 04 <level> <state> <sum>.
+pub fn bigbigwon_request() -> [u8; 65] {
+    let mut report = [0; 65];
+    report[1..5].copy_from_slice(&[0xa5, 0x04, 0x04, 0xad]);
+    report
+}
+
+pub fn bigbigwon_battery(report: &[u8]) -> Option<u8> {
+    if report.first() != Some(&0xa5) {
+        return None;
+    }
+    let total = *report.get(1)? as usize;
+    if total < 6 || total > report.len() || report[2] != 0x04 {
+        return None;
+    }
+    let sum = report[..total - 1]
+        .iter()
+        .fold(0u8, |sum, &byte| sum.wrapping_add(byte));
+    if report[total - 1] != sum {
+        return None;
+    }
+    let level = report[3];
+    (level <= 100).then_some(level)
+}
