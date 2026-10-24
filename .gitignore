@@ -8,4 +8,8 @@ __pycache__/
 /scripts/
 /agents.md
 /AGENTS.md
+!/scripts/
+/scripts/*
+!/scripts/build-windows.ps1
+!/scripts/package.ps1
 

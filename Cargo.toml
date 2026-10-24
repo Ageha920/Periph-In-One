@@ -3,6 +3,10 @@ name = "periph-in-one"
 version = "0.1.8"
 edition = "2024"
 description = "A portable Windows peripheral battery monitor"
+license = "MIT"
+repository = "https://github.com/FoLeaf/Periph-In-One"
+readme = "README.md"
+publish = false
 build = "build.rs"
 
 [dependencies]
