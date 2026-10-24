@@ -3594,6 +3594,7 @@ version = "0.1.8"
 dependencies = [
  "chrono",
  "hidapi",
+ "png",
  "raw-window-handle",
  "serde",
  "serde_json",

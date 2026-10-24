@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360" role="img" aria-labelledby="title desc">
+  <title id="title">Periph In One — 外设电量，一眼看全</title>
+  <desc id="desc">Windows 外设电量工具。石墨色电量环、三段电平与橙色连接状态点，延续应用图标。</desc>
+  <rect width="1200" height="360" rx="24" fill="#edeef2"/>
+  <g font-family="Segoe UI, Microsoft YaHei UI, sans-serif">
+    <text x="56" y="69" fill="#65656e" font-size="22" letter-spacing="3">WINDOWS · RUST + SLINT</text>
+    <text x="52" y="164" fill="#202024" font-size="76" font-weight="700" letter-spacing="-3">Periph In One</text>
+    <text x="56" y="224" fill="#44444c" font-size="34">外设电量，一眼看全。</text>
+    <path d="M56 265h616" stroke="#d2d3da"/>
+    <text x="56" y="310" fill="#65656e" font-size="23">鼠标 / 键盘 / 耳机 / 手柄</text>
+  </g>
+  <g transform="translate(794 62)">
+    <rect width="236" height="236" rx="66" fill="#242428"/>
+    <circle cx="118" cy="118" r="78" fill="none" stroke="#f6f6f8" stroke-width="10"/>
+    <path d="M80 140v-26m38 40V80m38 60v-44" stroke="#f6f6f8" stroke-width="15" stroke-linecap="round"/>
+    <circle cx="182" cy="48" r="21" fill="#ef8439" stroke="#242428" stroke-width="10"/>
+  </g>
+</svg>
