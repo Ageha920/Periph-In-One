@@ -1,5 +1,6 @@
 use crate::{model::Reading, protocol};
 use hidapi::{DeviceInfo, HidApi, HidDevice};
+use serde::Serialize;
 use std::{
     collections::BTreeMap,
     time::{Duration, Instant},
@@ -135,6 +136,41 @@ fn supported(info: &DeviceInfo) -> bool {
             && info.usage() == 2)
 }
 
+#[derive(Debug, Serialize)]
+pub struct UsbIdentifiers {
+    pub hardware_name: String,
+    pub vid: u16,
+    pub pid: u16,
+}
+
+fn receiver_interfaces(api: &HidApi) -> BTreeMap<String, Vec<&DeviceInfo>> {
+    let mut groups: BTreeMap<String, Vec<&DeviceInfo>> = BTreeMap::new();
+    for info in api.device_list().filter(|d| supported(d)) {
+        groups.entry(container_id(info)).or_default().push(info);
+    }
+    for interfaces in groups.values_mut() {
+        interfaces.sort_by_key(|d| d.usage_page() != 0xff05);
+    }
+    groups
+}
+
+/// Enumerate the actual USB identifiers without opening protocol handles or
+/// sending battery/configuration reports. One result per physical receiver.
+pub fn enumerate_identifiers() -> Result<Vec<UsbIdentifiers>, String> {
+    let api = HidApi::new().map_err(|_| "暂时无法读取设备，请稍后重试".to_string())?;
+    Ok(receiver_interfaces(&api)
+        .values()
+        .map(|interfaces| {
+            let info = interfaces[0];
+            UsbIdentifiers {
+                hardware_name: info.product_string().unwrap_or("未提供硬件名称").into(),
+                vid: info.vendor_id(),
+                pid: info.product_id(),
+            }
+        })
+        .collect())
+}
+
 fn open_pair(api: &HidApi, info: &DeviceInfo) -> Result<(HidDevice, HidDevice), String> {
     // Keep input on an independent overlapped handle; never mix an outstanding
     // read with writes/IOCTL on the same handle.
@@ -240,13 +276,8 @@ fn headset(api: &HidApi, info: &DeviceInfo) -> Result<(Option<u8>, String), Stri
 
 pub fn scan() -> Result<Vec<Reading>, String> {
     let api = HidApi::new().map_err(|_| "暂时无法读取设备，请稍后刷新".to_string())?;
-    let mut groups: BTreeMap<String, Vec<&DeviceInfo>> = BTreeMap::new();
-    for info in api.device_list().filter(|d| supported(d)) {
-        groups.entry(container_id(info)).or_default().push(info);
-    }
     let mut result = Vec::new();
-    for (physical_id, mut interfaces) in groups {
-        interfaces.sort_by_key(|d| if d.usage_page() == 0xff05 { 0 } else { 1 });
+    for (physical_id, interfaces) in receiver_interfaces(&api) {
         let info = interfaces[0];
         let mut reading = Reading {
             physical_id,

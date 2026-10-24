@@ -10,7 +10,10 @@ use std::{
 };
 use windows::Win32::{
     System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree, IPersistFile},
-    UI::Shell::{FOLDERID_Startup, IShellLinkW, KF_FLAG_DEFAULT, SHGetKnownFolderPath, ShellLink},
+    UI::Shell::{
+        FOLDERID_Startup, IShellLinkW, KF_FLAG_DEFAULT, SHGetKnownFolderPath,
+        SetCurrentProcessExplicitAppUserModelID, ShellLink,
+    },
 };
 use windows::core::{Interface, PCWSTR};
 use windows_sys::Win32::{
@@ -36,6 +39,35 @@ pub fn error_dialog(message: &str) {
             wide("Periph In One").as_ptr(),
             MB_OK | MB_ICONERROR,
         );
+    }
+}
+
+pub fn initialize_taskbar() -> Result<(), String> {
+    unsafe { SetCurrentProcessExplicitAppUserModelID(PCWSTR(wide("PeriphInOne.Desktop").as_ptr())) }
+        .map_err(|_| "无法初始化任务栏，请重新启动软件".into())
+}
+
+fn application_icons(dpi: u32) -> Result<(HICON, HICON), String> {
+    unsafe {
+        let module = GetModuleHandleW(null());
+        let load = |metric| {
+            LoadImageW(
+                module,
+                1usize as *const u16,
+                IMAGE_ICON,
+                GetSystemMetricsForDpi(metric, dpi),
+                GetSystemMetricsForDpi(metric + 1, dpi),
+                LR_SHARED,
+            ) as HICON
+        };
+        // Resource 1 is the multi-resolution ICO embedded by winresource.
+        // Shared module resources outlive HWND destruction and need no DestroyIcon.
+        let small = load(SM_CXSMICON);
+        let large = load(SM_CXICON);
+        if small.is_null() || large.is_null() {
+            return Err("无法加载应用图标，请重新下载软件".into());
+        }
+        Ok((small, large))
     }
 }
 
@@ -143,6 +175,11 @@ pub fn hwnd(window: &slint::Window) -> Option<HWND> {
 fn attach(window: &slint::Window, mini: bool) -> Result<(), String> {
     let handle = hwnd(window).ok_or("窗口句柄尚未创建")?;
     unsafe {
+        // Slint caches the image even across HWND recreation; its pending
+        // attributes only carry ICON_SMALL. Restore both icons on every HWND.
+        let (small, large) = application_icons(GetDpiForWindow(handle).max(96))?;
+        SendMessageW(handle, WM_SETICON, ICON_SMALL as usize, small as isize);
+        SendMessageW(handle, WM_SETICON, ICON_BIG as usize, large as isize);
         // SetWindowSubclass with the same id replaces the previous entry, so
         // re-attaching after every hide/show cycle stays idempotent.
         if SetWindowSubclass(handle, Some(window_proc), 0x4249, mini as usize) == 0 {
@@ -571,6 +608,24 @@ pub fn copy_text(text: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn application_resource_supplies_small_and_taskbar_icons_at_each_dpi() {
+        for dpi in [96, 144, 192] {
+            let (small, large) = application_icons(dpi).unwrap();
+            for icon in [small, large] {
+                unsafe {
+                    let mut info = ICONINFO::default();
+                    assert_ne!(GetIconInfo(icon, &mut info), 0);
+                    assert!(!info.hbmColor.is_null());
+                    DeleteObject(info.hbmColor);
+                    if !info.hbmMask.is_null() {
+                        DeleteObject(info.hbmMask);
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn native_header_drag_preserves_buttons_content_and_resize_edges_at_each_dpi() {

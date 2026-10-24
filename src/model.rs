@@ -42,6 +42,10 @@ pub fn serial_key(vid: u16, pid: u16, serial: &str) -> String {
     format!("sn:{}", serde_json::to_string(&(vid, pid, serial)).unwrap())
 }
 
+pub fn usb_id_label(vid: u16, pid: u16) -> String {
+    format!("VID: 0x{vid:04X} · PID: 0x{pid:04X}")
+}
+
 fn name_used_as_serial(serial: &str, name: &str) -> bool {
     !serial.is_empty() && serial.trim().eq_ignore_ascii_case(name.trim())
 }

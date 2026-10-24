@@ -24,7 +24,7 @@ component IconButton inherits Rectangle {
     width: 32px;
     height: 32px;
     border-radius: 9px;
-    background: touch.has-hover ? #e4ece8 : transparent;
+    background: touch.has-hover ? #e2e3e7 : transparent;
     accessible-role: button;
     accessible-label: label;
     accessible-action-default => { root.clicked(); }
@@ -38,21 +38,21 @@ component DeviceCard inherits Rectangle {
     callback edit();
     callback delete-device();
     height: 208px;
-    border-radius: 18px;
+    border-radius: 16px;
     border-width: 1px;
-    border-color: data.present ? #e4ece8 : #e8edeb;
+    border-color: data.present ? #e2e3e7 : #e1e2e6;
     background: #ffffff;
 
     Rectangle {
         x: 16px; y: 17px; width: 43px; height: 43px;
-        border-radius: 12px; background: root.data.present ? #eff5f2 : #f4f5f5;
+        border-radius: 12px; background: root.data.present ? #efeff2 : #f1f1f3;
         Image { x: 8px; y: 8px; width: 27px; height: 27px; source: root.data.kind == "mouse" ? @image-url("../assets/mouse.svg") : @image-url("../assets/headset.svg"); opacity: root.data.present ? 1 : 0.45; }
     }
-    Text { x: 71px; y: 17px; width: parent.width - (root.data.present ? 120px : 152px); height: 25px; text: root.data.title; font-size: 17px; font-weight: 600; color: #19392d; overflow: elide; }
-    Text { x: 71px; y: 43px; width: parent.width - 100px; height: 18px; text: root.data.kind == "mouse" ? "无线鼠标 · 2.4G" : "无线耳机 · 2.4G"; font-size: 11px; color: #71857a; overflow: elide; }
+    Text { x: 71px; y: 17px; width: parent.width - (root.data.present ? 120px : 152px); height: 25px; text: root.data.title; font-size: 17px; font-weight: 600; color: #18181b; overflow: elide; }
+    Text { x: 71px; y: 43px; width: parent.width - 100px; height: 18px; text: root.data.kind == "mouse" ? "无线鼠标 · 2.4G" : "无线耳机 · 2.4G"; font-size: 11px; color: #76767e; overflow: elide; }
     Rectangle {
         x: parent.width - 40px; y: 14px; width: 26px; height: 26px; border-radius: 7px;
-        background: edit-touch.has-hover ? #edf5f0 : transparent;
+        background: edit-touch.has-hover ? #ececef : transparent;
         Image { x: 5px; y: 5px; width: 16px; height: 16px; source: @image-url("../assets/edit.svg"); }
         edit-touch := TouchArea { mouse-cursor: pointer; clicked => { root.edit(); } }
         accessible-role: button; accessible-label: "编辑备注"; accessible-action-default => { root.edit(); }
@@ -63,15 +63,15 @@ component DeviceCard inherits Rectangle {
         clicked => { root.delete-device(); }
     }
 
-    Text { x: 18px; y: 75px; width: 140px; height: 45px; text: root.data.percentage; font-size: 35px; font-weight: 500; color: root.data.fresh ? #19392d : #8f9e96; }
-    Text { x: parent.width - 146px; y: 93px; width: 128px; height: 18px; text: root.data.status; horizontal-alignment: right; font-size: 11px; color: root.data.fresh ? #00896c : #829088; overflow: elide; }
+    Text { x: 18px; y: 75px; width: 140px; height: 45px; text: root.data.percentage; font-size: 35px; font-weight: 500; color: root.data.fresh ? #18181b : #97979f; }
+    Text { x: parent.width - 146px; y: 93px; width: 128px; height: 18px; text: root.data.status; horizontal-alignment: right; font-size: 11px; color: root.data.fresh ? #27272a : #929299; overflow: elide; }
     Rectangle {
-        x: 18px; y: 125px; width: parent.width - 36px; height: 5px; border-radius: 3px; background: #e9efec;
-        Rectangle { x: 0px; y: 0px; width: parent.width * root.data.level; height: parent.height; border-radius: 3px; background: !root.data.fresh ? #bac8bf : root.data.level < 0.3 ? #cd6854 : root.data.level < 0.6 ? #c19a43 : #00896c; }
+        x: 18px; y: 125px; width: parent.width - 36px; height: 5px; border-radius: 3px; background: #e5e5e9;
+        Rectangle { x: 0px; y: 0px; width: parent.width * root.data.level; height: parent.height; border-radius: 3px; background: !root.data.fresh ? #c5c5cc : root.data.level < 0.3 ? #e47e35 : #27272a; }
     }
-    if root.show-hardware-name: Text { x: 18px; y: 140px; width: parent.width - 36px; height: 17px; text: root.data.hardware-name; color: #62776b; font-size: 11px; overflow: elide; }
-    Text { x: 18px; y: root.show-hardware-name ? 162px : 143px; width: parent.width - 36px; height: 17px; text: root.data.serial; color: #7b8c82; font-size: 10px; overflow: elide; }
-    Text { x: 18px; y: root.show-hardware-name ? 185px : 171px; width: parent.width - 36px; height: 14px; text: root.data.updated; color: #89988f; font-size: 10px; overflow: elide; }
+    if root.show-hardware-name: Text { x: 18px; y: 140px; width: parent.width - 36px; height: 17px; text: root.data.hardware-name; color: #6c6c74; font-size: 11px; overflow: elide; }
+    Text { x: 18px; y: root.show-hardware-name ? 162px : 143px; width: parent.width - 36px; height: 17px; text: root.data.usb-id; color: #7a7a82; font-size: 10px; overflow: elide; }
+    Text { x: 18px; y: root.show-hardware-name ? 185px : 171px; width: parent.width - 36px; height: 14px; text: root.data.updated; color: #8c8c94; font-size: 10px; overflow: elide; }
 }
 
 component MiniPanel inherits Rectangle {
@@ -83,9 +83,9 @@ component MiniPanel inherits Rectangle {
     callback hide-window();
     callback refresh();
 
-    Rectangle { border-width: 1px; border-color: #dce5df; border-radius: 12px; background: transparent; }
+    Rectangle { border-width: 1px; border-color: #d5d5dc; border-radius: 12px; background: transparent; }
     Image { x: 12px; y: 12px; width: 18px; height: 18px; source: @image-url("../assets/brand.svg"); }
-    Text { x: 38px; y: 12px; width: parent.width - 122px; height: 18px; text: "Periph In One"; font-size: 12px; font-weight: 600; color: #19392d; }
+    Text { x: 38px; y: 12px; width: parent.width - 122px; height: 18px; text: "Periph In One"; font-size: 12px; font-weight: 600; color: #18181b; }
     IconButton { x: parent.width - 78px; y: 5px; icon: @image-url("../assets/expand.svg"); label: "展开完整面板"; clicked => { root.expand(); } }
     IconButton { x: parent.width - 42px; y: 5px; icon: @image-url("../assets/close.svg"); label: "隐藏到托盘"; clicked => { root.hide-window(); } }
 
@@ -100,23 +100,23 @@ component MiniPanel inherits Rectangle {
             height: 48px;
 
             Image { x: 0px; y: 6px; width: 18px; height: 18px; source: data.kind == "mouse" ? @image-url("../assets/mouse.svg") : @image-url("../assets/headset.svg"); }
-            Text { x: 26px; y: 2px; width: parent.width - 84px; height: 18px; text: data.title; font-size: 12px; color: data.fresh ? #19392d : #62776b; overflow: elide; }
+            Text { x: 26px; y: 2px; width: parent.width - 84px; height: 18px; text: data.title; font-size: 12px; color: data.fresh ? #18181b : #6c6c74; overflow: elide; }
             Text {
                 x: parent.width - 58px; y: 0px; width: 58px; height: 22px;
                 text: data.percentage;
                 font-size: 15px; font-weight: 600; horizontal-alignment: right;
-                color: data.fresh ? (data.level < 0.3 ? #cd6854 : data.level < 0.6 ? #c19a43 : #00896c) : #71857a;
+                color: data.fresh ? (data.level < 0.3 ? #e47e35 : #27272a) : #76767e;
             }
             Text {
                 x: 26px; y: 22px; width: parent.width - 26px; height: 14px;
                 text: data.fresh ? data.updated : data.status + " · " + data.updated;
-                font-size: 10px; color: #62776b; overflow: elide;
+                font-size: 10px; color: #6c6c74; overflow: elide;
             }
             Rectangle {
-                x: 26px; y: 42px; width: parent.width - 26px; height: 3px; border-radius: 1.5px; background: #e9efec;
+                x: 26px; y: 42px; width: parent.width - 26px; height: 3px; border-radius: 1.5px; background: #e5e5e9;
                 Rectangle {
                     width: parent.width * data.level; height: parent.height; border-radius: 1.5px;
-                    background: !data.fresh ? #bac8bf : data.level < 0.3 ? #cd6854 : data.level < 0.6 ? #c19a43 : #00896c;
+                    background: !data.fresh ? #c5c5cc : data.level < 0.3 ? #e47e35 : #27272a;
                 }
             }
         }
@@ -124,14 +124,14 @@ component MiniPanel inherits Rectangle {
     if root.devices.length == 0: Text {
         x: 10px; y: 42px; width: parent.width - 20px; height: 42px;
         text: root.busy ? "正在寻找设备…" : "未发现设备";
-        horizontal-alignment: center; vertical-alignment: center; color: #6c8274;
+        horizontal-alignment: center; vertical-alignment: center; color: #7b7b84;
     }
 
     Text {
         x: 14px; y: parent.height - 27px; width: parent.width - 66px; height: 18px;
         text: root.notice != "" ? root.notice : (root.busy ? "正在读取设备…" : root.updated);
         font-size: 10px; vertical-alignment: center; overflow: elide;
-        color: root.notice != "" ? #a36e3d : #6e8275;
+        color: root.notice != "" ? #bb6425 : #797982;
     }
     IconButton { x: parent.width - 42px; y: parent.height - 37px; icon: @image-url("../assets/refresh.svg"); label: "立即刷新"; clicked => { if !root.busy { root.refresh(); } } }
 }
@@ -146,7 +146,7 @@ export component AppWindow inherits Window {
     max-width: root.mini-mode ? 280px : 65535px;
     min-height: root.mini-mode ? root.mini-height : 340px;
     max-height: root.mini-mode ? root.mini-height : 65535px;
-    background: #f3f6f5;
+    background: #edeef2;
     no-frame: true;
     default-font-family: "Microsoft YaHei UI";
     default-font-size: 13px;
@@ -167,6 +167,7 @@ export component AppWindow inherits Window {
     in-out property <string> editing-name;
     in-out property <string> editing-alias;
     in-out property <string> editing-serial;
+    in property <string> editing-usb-id;
     in property <bool> editing-has-name;
     in property <bool> editing-has-serial;
     in-out property <string> editing-identity;
@@ -180,6 +181,7 @@ export component AppWindow inherits Window {
     callback rebind-remark(string, int);
     callback copy-serial(string);
     callback copy-name(string);
+    callback copy-usb-id(string);
     callback delete-device(string);
     callback toggle-autostart(bool);
 
@@ -198,10 +200,10 @@ export component AppWindow inherits Window {
     if !root.mini-mode: Rectangle {
         width: 100%;
         height: 100%;
-        Rectangle { border-width: 1px; border-color: #dce5df; border-radius: 16px; background: transparent; }
+        Rectangle { border-width: 1px; border-color: #d5d5dc; border-radius: 16px; background: transparent; }
         Image { x: 22px; y: 25px; width: 38px; height: 38px; source: @image-url("../assets/brand.svg"); }
-        Text { x: 72px; y: 21px; width: parent.width - 174px; height: 31px; text: "Periph In One"; font-size: 20px; font-weight: 700; color: #19392d; }
-        Text { x: 73px; y: 54px; width: parent.width - 96px; height: 18px; text: root.summary; font-size: 11px; color: #6c8274; overflow: elide; }
+        Text { x: 72px; y: 21px; width: parent.width - 174px; height: 31px; text: "Periph In One"; font-size: 20px; font-weight: 700; color: #18181b; }
+        Text { x: 73px; y: 54px; width: parent.width - 96px; height: 18px; text: root.summary; font-size: 11px; color: #7b7b84; overflow: elide; }
         IconButton { x: parent.width - 92px; y: 28px; icon: @image-url("../assets/settings.svg"); label: "设置"; clicked => { root.settings-open = !root.settings-open; } }
         IconButton { x: parent.width - 52px; y: 28px; icon: @image-url("../assets/close.svg"); label: "隐藏到托盘"; clicked => { root.hide-window(); } }
 
@@ -225,32 +227,32 @@ export component AppWindow inherits Window {
             }
             if root.devices.length == 0: Rectangle {
                 width: parent.width; height: 220px;
-                border-radius: 18px; border-width: 1px; border-color: #e2eae5; background: #ffffff;
+                border-radius: 16px; border-width: 1px; border-color: #dfdfe5; background: #ffffff;
                 Image { x: (parent.width - 48px) / 2; y: 40px; width: 48px; height: 48px; source: @image-url("../assets/brand.svg"); }
-                Text { x: 16px; y: 106px; width: parent.width - 32px; height: 24px; text: root.busy ? "正在寻找设备…" : "还没有发现设备"; horizontal-alignment: center; font-size: 16px; font-weight: 600; color: #375546; }
-                Text { x: 20px; y: 143px; width: parent.width - 40px; height: 45px; text: "请连接设备接收器"; horizontal-alignment: center; wrap: word-wrap; font-size: 11px; color: #829387; }
+                Text { x: 16px; y: 106px; width: parent.width - 32px; height: 24px; text: root.busy ? "正在寻找设备…" : "还没有发现设备"; horizontal-alignment: center; font-size: 16px; font-weight: 600; color: #303035; }
+                Text { x: 20px; y: 143px; width: parent.width - 40px; height: 45px; text: "请连接设备接收器"; horizontal-alignment: center; wrap: word-wrap; font-size: 11px; color: #82828b; }
             }
         }
 
-        Text { x: 24px; y: parent.height - 46px; width: parent.width - 84px; height: 18px; text: root.busy ? "正在读取设备…" : root.updated; font-size: 11px; color: #6e8275; overflow: elide; }
-        if root.notice != "": Text { x: 24px; y: parent.height - 25px; width: parent.width - 48px; height: 18px; text: root.notice; font-size: 10px; color: #a36e3d; overflow: elide; }
+        Text { x: 24px; y: parent.height - 46px; width: parent.width - 84px; height: 18px; text: root.busy ? "正在读取设备…" : root.updated; font-size: 11px; color: #797982; overflow: elide; }
+        if root.notice != "": Text { x: 24px; y: parent.height - 25px; width: parent.width - 48px; height: 18px; text: root.notice; font-size: 10px; color: #bb6425; overflow: elide; }
         IconButton { x: parent.width - 54px; y: parent.height - 54px; icon: @image-url("../assets/refresh.svg"); label: "立即刷新"; clicked => { if !root.busy { root.refresh(); } } }
 
         if root.settings-open || root.editing || root.deleting: Rectangle {
-            background: #18382b44;
+            background: #10101455;
             TouchArea { clicked => { root.settings-open = false; root.editing = false; root.deleting = false; } }
         }
 
         if root.settings-open: Rectangle {
             x: max(16px, (parent.width - 360px) / 2); y: max(24px, (parent.height - self.height) / 2);
             width: min(parent.width - 32px, 360px); height: 142px;
-            border-radius: 18px; background: #ffffff;
+            border-radius: 16px; background: #ffffff;
             TouchArea { clicked => {} }
             ScrollView {
             viewport-width: self.visible-width;
             VerticalLayout {
                 padding: 22px; spacing: 12px;
-                HorizontalLayout { Text { text: "设置"; font-size: 20px; font-weight: 600; color: #19392d; } IconButton { icon: @image-url("../assets/close.svg"); label: "关闭设置"; clicked => { root.settings-open = false; } } }
+                HorizontalLayout { Text { text: "设置"; font-size: 20px; font-weight: 600; color: #18181b; } IconButton { icon: @image-url("../assets/close.svg"); label: "关闭设置"; clicked => { root.settings-open = false; } } }
                 CheckBox { text: "开机启动"; checked <=> root.autostart; toggled => { root.toggle-autostart(self.checked); } }
             }
             }
@@ -259,30 +261,35 @@ export component AppWindow inherits Window {
         if root.editing: Rectangle {
             x: max(16px, (parent.width - 390px) / 2); y: max(18px, (parent.height - self.height) / 2);
             width: min(parent.width - 32px, 390px); height: min(parent.height - 36px, 420px);
-            border-radius: 18px; background: #ffffff;
+            border-radius: 16px; background: #ffffff;
             TouchArea { clicked => {} }
             ScrollView {
                 viewport-width: self.visible-width;
                 VerticalLayout {
                     padding: 22px; spacing: 12px;
-                    HorizontalLayout { Text { text: "设备备注"; font-size: 20px; font-weight: 600; color: #19392d; } IconButton { icon: @image-url("../assets/close.svg"); label: "取消编辑"; clicked => { root.editing = false; } } }
+                    HorizontalLayout { Text { text: "设备备注"; font-size: 20px; font-weight: 600; color: #18181b; } IconButton { icon: @image-url("../assets/close.svg"); label: "取消编辑"; clicked => { root.editing = false; } } }
                     HorizontalLayout {
                         spacing: 8px;
-                        Text { text: root.editing-name; color: #62796a; font-size: 12px; wrap: word-wrap; horizontal-stretch: 1; vertical-alignment: center; }
+                        Text { text: root.editing-name; color: #64646e; font-size: 12px; wrap: word-wrap; horizontal-stretch: 1; vertical-alignment: center; }
                         if root.editing-has-name: IconButton { icon: @image-url("../assets/copy.svg"); label: "复制硬件名称"; clicked => { root.copy-name(root.editing-id); } }
                     }
                     HorizontalLayout {
                         spacing: 8px;
-                        Text { text: root.editing-serial; color: #71877a; font-size: 11px; wrap: char-wrap; horizontal-stretch: 1; vertical-alignment: center; }
+                        Text { text: root.editing-serial; color: #72727b; font-size: 11px; wrap: char-wrap; horizontal-stretch: 1; vertical-alignment: center; }
                         if root.editing-has-serial: IconButton { icon: @image-url("../assets/copy.svg"); label: "复制接收器序列号"; clicked => { root.copy-serial(root.editing-id); } }
                     }
-                    if root.editing-identity != "": Text { text: root.editing-identity; color: #a36e3d; font-size: 10px; wrap: word-wrap; }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text { text: root.editing-usb-id; color: #72727b; font-size: 11px; wrap: word-wrap; horizontal-stretch: 1; vertical-alignment: center; }
+                        IconButton { icon: @image-url("../assets/copy.svg"); label: "复制 VID/PID"; clicked => { root.copy-usb-id(root.editing-id); } }
+                    }
+                    if root.editing-identity != "": Text { text: root.editing-identity; color: #bb6425; font-size: 10px; wrap: word-wrap; }
                     LineEdit { text <=> root.editing-alias; placeholder-text: "例如：办公鼠标"; accepted => { root.save-remark(root.editing-id, root.editing-alias); } }
-                    Button { text: "保存"; primary: true; clicked => { root.save-remark(root.editing-id, root.editing-alias); } }
-                    if root.notice != "": Text { text: root.notice; color: #a36e3d; font-size: 10px; wrap: word-wrap; }
+                    Button { text: "保存"; primary: false; clicked => { root.save-remark(root.editing-id, root.editing-alias); } }
+                    if root.notice != "": Text { text: root.notice; color: #bb6425; font-size: 10px; wrap: word-wrap; }
                     if root.rebind-options.length > 0: VerticalLayout {
                         spacing: 8px;
-                        Text { text: "离线记录"; font-size: 11px; color: #71877a; }
+                        Text { text: "离线记录"; font-size: 11px; color: #72727b; }
                         source-record := ComboBox { model: root.rebind-options; }
                         Button { text: "恢复备注"; clicked => { root.rebind-remark(root.editing-id, source-record.current-index); } }
                     }
@@ -293,12 +300,12 @@ export component AppWindow inherits Window {
         if root.deleting: Rectangle {
             x: max(16px, (parent.width - 360px) / 2); y: (parent.height - self.height) / 2;
             width: min(parent.width - 32px, 360px); height: 170px;
-            border-radius: 18px; background: #ffffff;
+            border-radius: 16px; background: #ffffff;
             TouchArea { clicked => {} }
             VerticalLayout {
                 padding: 22px; spacing: 12px;
-                Text { text: "删除离线记录？"; font-size: 18px; font-weight: 600; color: #19392d; }
-                Text { text: root.deleting-name; color: #62796a; overflow: elide; }
+                Text { text: "删除离线记录？"; font-size: 18px; font-weight: 600; color: #18181b; }
+                Text { text: root.deleting-name; color: #64646e; overflow: elide; }
                 HorizontalLayout {
                     spacing: 12px;
                     Button { text: "取消"; clicked => { root.deleting = false; } }

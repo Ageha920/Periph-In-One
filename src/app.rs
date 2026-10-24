@@ -32,6 +32,7 @@ pub enum Action {
     Rebind(String, usize),
     Copy(String),
     CopyName(String),
+    CopyIds(String),
     Delete(String),
     Saved(u64, Result<(), String>),
     Autostart(bool),
@@ -123,6 +124,7 @@ impl App {
                 | "备注已重新绑定"
                 | "接收器序列号已复制"
                 | "硬件名称已复制"
+                | "VID/PID 已复制"
                 | "离线记录已删除"
                 | "已启用开机自启"
                 | "已关闭开机自启"
@@ -193,7 +195,7 @@ impl App {
                     } else {
                         format!("接收器 SN：{}", saved.serial).into()
                     },
-                    usb_id: format!("{:04X}:{:04X}", saved.vid, saved.pid).into(),
+                    usb_id: model::usb_id_label(saved.vid, saved.pid).into(),
                     kind: saved.kind.clone().into(),
                     percentage: saved
                         .battery
@@ -356,6 +358,9 @@ impl App {
             Action::Edit(id) => {
                 if let Some(device) = self.devices.iter().find(|d| d.saved.id == id) {
                     self.ui.set_editing_id(id.clone().into());
+                    self.ui.set_editing_usb_id(
+                        model::usb_id_label(device.saved.vid, device.saved.pid).into(),
+                    );
                     self.ui.set_editing_name(
                         format!("硬件名称：{}", device.saved.hardware_name).into(),
                     );
@@ -445,6 +450,17 @@ impl App {
                     }
                 }
             }
+            Action::CopyIds(id) => {
+                if let Some(device) = self.devices.iter().find(|d| d.saved.id == id) {
+                    match platform::copy_text(&model::usb_id_label(
+                        device.saved.vid,
+                        device.saved.pid,
+                    )) {
+                        Ok(()) => self.notice("VID/PID 已复制"),
+                        Err(error) => self.notice(error),
+                    }
+                }
+            }
             Action::Delete(id) => {
                 let previous = self.devices.clone();
                 match model::remove_offline(&mut self.devices, &id) {
@@ -530,24 +546,8 @@ fn tray_icon() -> Result<TrayIcon, String> {
             post(Action::Show);
         }
     }));
-    let mut rgba = vec![0u8; 32 * 32 * 4];
-    for y in 0..32_i32 {
-        for x in 0..32_i32 {
-            let distance =
-                (((x as f32 - 15.5).powi(2) + (y as f32 - 15.5).powi(2)).sqrt() - 11.5).abs();
-            let bar = (9..=11).contains(&x) && (15..=21).contains(&y)
-                || (15..=17).contains(&x) && (10..=23).contains(&y)
-                || (21..=23).contains(&x) && (13..=21).contains(&y);
-            let a = if bar {
-                255
-            } else {
-                ((1.8 - distance).clamp(0.0, 1.0) * 255.0) as u8
-            };
-            let i = ((y * 32 + x) * 4) as usize;
-            rgba[i..i + 4].copy_from_slice(&[0, 164, 119, a]);
-        }
-    }
-    let icon = Icon::from_rgba(rgba, 32, 32).map_err(|e| e.to_string())?;
+    let icon = Icon::from_rgba(include_bytes!("../assets/tray-icon.rgba").to_vec(), 32, 32)
+        .map_err(|e| e.to_string())?;
     TrayIconBuilder::new()
         .with_icon(icon)
         .with_tooltip("Periph In One")
@@ -565,6 +565,14 @@ pub fn run() -> Result<(), String> {
     }
 
     let arguments: Vec<_> = std::env::args().skip(1).collect();
+    if arguments.iter().any(|a| a == "--list-devices") {
+        let identifiers = devices::enumerate_identifiers()?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&identifiers).map_err(|e| e.to_string())?
+        );
+        return Ok(());
+    }
     if arguments.iter().any(|a| a == "--once") {
         let readings = devices::scan()?;
         // Explicit diagnostic mode prints battery and name, never serials.
@@ -582,6 +590,7 @@ pub fn run() -> Result<(), String> {
         return Ok(());
     }
     let autostart = arguments.iter().any(|a| a == "--autostart");
+    platform::initialize_taskbar()?;
     let Some(_instance) = platform::single_instance(autostart)? else {
         return Ok(());
     };
@@ -650,6 +659,7 @@ pub fn run() -> Result<(), String> {
     });
     ui.on_copy_serial(|id| post(Action::Copy(id.into())));
     ui.on_copy_name(|id| post(Action::CopyName(id.into())));
+    ui.on_copy_usb_id(|id| post(Action::CopyIds(id.into())));
     ui.on_delete_device(|id| post(Action::Delete(id.into())));
     ui.on_toggle_autostart(|enabled| post(Action::Autostart(enabled)));
     ui.window().on_close_requested(|| {
