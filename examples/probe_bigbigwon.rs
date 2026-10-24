@@ -92,6 +92,7 @@ fn main() {
         ("GetMacroList(D5)", short(0xd5)),
         ("ReadConfig(D6)", short(0xd6)),
     ];
+    let mut answered_total = 0;
     for (label, report) in probes {
         let opcode = report[3];
         // Clear stale input so the dump only holds this query's answers.
@@ -114,6 +115,7 @@ fn main() {
                     if opcode_echo == Some(opcode) || buffer[0] == 0xa4 {
                         dump(label, &buffer[..n]);
                         answered = true;
+                        answered_total += 1;
                     } else if buffer[0] == 0xa5 {
                         dump(&format!("{label} (其他帧)"), &buffer[..n]);
                     }
@@ -125,5 +127,28 @@ fn main() {
             println!("{label} 无应答");
         }
         println!("---");
+    }
+
+    // The idle personality keeps the interrupt endpoint silent, but the
+    // control path may still answer GetFeature reads. Probe the same
+    // read-only set through feature reports before declaring it mute.
+    if answered_total == 0 {
+        println!("== feature 通道试探 ==");
+        for (label, report) in probes {
+            let mut request = report;
+            request[0] = 0;
+            match reader.get_feature_report(&mut request) {
+                Ok(n) if n > 1 => {
+                    let hex = request[..n.min(24)]
+                        .iter()
+                        .map(|b| format!("{b:02X}"))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    println!("{label} feature {n} 字节: {hex}");
+                }
+                Ok(_) => println!("{label} feature 空应答"),
+                Err(error) => println!("{label} feature 失败: {error}"),
+            }
+        }
     }
 }
