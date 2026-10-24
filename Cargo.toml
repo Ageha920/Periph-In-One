@@ -1,6 +1,6 @@
 [package]
-name = "battery-island"
-version = "0.1.0"
+name = "periph-in-one"
+version = "0.1.1"
 edition = "2024"
 description = "A portable Windows peripheral battery monitor"
 build = "build.rs"

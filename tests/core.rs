@@ -1,4 +1,4 @@
-use battery_island::{
+use periph_in_one::{
     config::Config,
     model::{self, Reading, SavedDevice},
     protocol::*,

@@ -17,5 +17,5 @@ fn main() {
 
 #[cfg(not(windows))]
 fn main() {
-    eprintln!("电量岛面向 Windows 10/11。核心测试可在本机运行：cargo test --lib --tests");
+    eprintln!("Periph In One 面向 Windows 10/11。核心测试可在本机运行：cargo test --lib --tests");
 }

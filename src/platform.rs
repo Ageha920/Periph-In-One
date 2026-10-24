@@ -38,7 +38,7 @@ pub fn error_dialog(message: &str) {
         MessageBoxW(
             null_mut(),
             wide(message).as_ptr(),
-            wide("电量岛").as_ptr(),
+            wide("Periph In One").as_ptr(),
             MB_OK | MB_ICONERROR,
         );
     }
@@ -54,6 +54,8 @@ impl Drop for SingleInstance {
 }
 
 pub fn show_message() -> u32 {
+    // Keep the existing IPC and mutex identifiers across the product rename:
+    // an older executable must not start a competing HID reader.
     static MESSAGE: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     *MESSAGE.get_or_init(|| unsafe {
         RegisterWindowMessageW(wide("BatteryIsland.ShowPanel.v1").as_ptr())
@@ -74,7 +76,7 @@ impl Drop for IpcWindow {
 pub fn ipc_window() -> Result<IpcWindow, String> {
     unsafe {
         let module = GetModuleHandleW(null());
-        let class = wide("BatteryIsland.Ipc.v1");
+        let class = wide("PeriphInOne.Ipc.v1");
         let definition = WNDCLASSW {
             lpfnWndProc: Some(ipc_proc),
             hInstance: module,
@@ -339,7 +341,7 @@ fn startup_path() -> Result<PathBuf, String> {
             .map_err(|e| e.to_string())?;
         let value = path.to_string().map_err(|e| e.to_string());
         CoTaskMemFree(Some(path.0.cast()));
-        Ok(PathBuf::from(value?).join("电量岛.lnk"))
+        Ok(PathBuf::from(value?).join("Periph In One.lnk"))
     }
 }
 
@@ -391,7 +393,7 @@ pub fn autostart_enabled() -> bool {
         let mut len = bytes.len() as u32;
         let status = RegQueryValueExW(
             key,
-            wide("电量岛.lnk").as_ptr(),
+            wide("Periph In One.lnk").as_ptr(),
             null(),
             null_mut(),
             bytes.as_mut_ptr(),
@@ -413,7 +415,7 @@ fn create_startup_shortcut(
         link.SetWorkingDirectory(PCWSTR(
             wide(&exe.parent().unwrap().to_string_lossy()).as_ptr(),
         ))?;
-        link.SetDescription(PCWSTR(wide("电量岛 — 外设电量查看器").as_ptr()))?;
+        link.SetDescription(PCWSTR(wide("Periph In One — 外设电量查看器").as_ptr()))?;
         let file: IPersistFile = link.cast()?;
         file.Save(PCWSTR(wide(&path.to_string_lossy()).as_ptr()), true)
     }
@@ -440,7 +442,7 @@ pub fn set_autostart(enabled: bool) -> Result<(), String> {
             &mut key,
         ) == ERROR_SUCCESS
         {
-            let status = RegDeleteValueW(key, wide("电量岛.lnk").as_ptr());
+            let status = RegDeleteValueW(key, wide("Periph In One.lnk").as_ptr());
             RegCloseKey(key);
             if status != ERROR_SUCCESS && status != ERROR_FILE_NOT_FOUND {
                 return Err("自启快捷方式已创建，但任务管理器的禁用状态未能清除".into());
@@ -464,7 +466,7 @@ mod tests {
             .ok()
             .unwrap();
             let directory = tempfile::tempdir().unwrap();
-            let path = directory.path().join("电量岛测试.lnk");
+            let path = directory.path().join("Periph In One测试.lnk");
             let exe = std::env::current_exe().unwrap();
             create_startup_shortcut(&path, &exe).unwrap();
             assert!(path.is_file());

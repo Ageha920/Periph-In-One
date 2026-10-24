@@ -71,7 +71,7 @@ component DeviceCard inherits Rectangle {
 }
 
 export component AppWindow inherits Window {
-    title: "电量岛";
+    title: "Periph In One";
     preferred-width: 360px;
     preferred-height: 640px;
     min-width: 320px;
@@ -112,7 +112,7 @@ export component AppWindow inherits Window {
         pointer-event(event) => { if event.kind == PointerEventKind.down && event.button == PointerEventButton.left { root.drag-window(); } }
     }
     Image { x: 22px; y: 25px; width: 38px; height: 38px; source: @image-url("../assets/brand.svg"); }
-    Text { x: 72px; y: 21px; width: parent.width - 174px; height: 31px; text: "电量岛"; font-size: 24px; font-weight: 700; color: #19392d; }
+    Text { x: 72px; y: 21px; width: parent.width - 174px; height: 31px; text: "Periph In One"; font-size: 20px; font-weight: 700; color: #19392d; }
     Text { x: 73px; y: 54px; width: parent.width - 96px; height: 18px; text: root.summary; font-size: 11px; color: #6c8274; overflow: elide; }
     IconButton { x: parent.width - 92px; y: 28px; icon: @image-url("../assets/settings.svg"); label: "设置"; clicked => { root.settings-open = !root.settings-open; } }
     IconButton { x: parent.width - 52px; y: 28px; icon: @image-url("../assets/close.svg"); label: "隐藏到托盘"; clicked => { root.hide-window(); } }

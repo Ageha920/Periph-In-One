@@ -1,10 +1,10 @@
 use crate::{AppWindow, DeviceRow, platform};
-use battery_island::{
+use chrono::{DateTime, Local};
+use periph_in_one::{
     config::Config,
     devices,
     model::{self, Device, Reading},
 };
-use chrono::{DateTime, Local};
 use slint::{ComponentHandle, ModelRc, VecModel};
 use std::{
     cell::RefCell,
@@ -224,9 +224,10 @@ impl App {
         }
         self.ui.set_summary(summary.join(" · ").into());
         let tooltip = if self.devices.is_empty() {
-            "电量岛 · 等待设备".to_string()
+            "Periph In One · 等待设备".to_string()
         } else {
-            self.devices
+            let readings = self
+                .devices
                 .iter()
                 .map(|d| {
                     format!(
@@ -244,7 +245,8 @@ impl App {
                     )
                 })
                 .collect::<Vec<_>>()
-                .join("\n")
+                .join("\n");
+            format!("Periph In One\n{readings}")
         };
         let _ = self
             .tray
@@ -457,7 +459,7 @@ fn tray_icon() -> Result<TrayIcon, String> {
     let icon = Icon::from_rgba(rgba, 32, 32).map_err(|e| e.to_string())?;
     TrayIconBuilder::new()
         .with_icon(icon)
-        .with_tooltip("电量岛")
+        .with_tooltip("Periph In One")
         .with_menu(Box::new(menu))
         .with_menu_on_left_click(false)
         .build()
