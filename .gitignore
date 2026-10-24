@@ -6,4 +6,6 @@ __pycache__/
 *.pyc
 /docs/
 /scripts/
+/agents.md
+/AGENTS.md
 
