@@ -6,10 +6,19 @@ use std::{
     time::{Duration, Instant},
 };
 use windows_sys::Win32::{
-    Devices::HumanInterfaceDevice::HidD_GetSerialNumberString,
+    Devices::HumanInterfaceDevice::{HidD_GetSerialNumberString, HidD_SetOutputReport},
     Devices::{DeviceAndDriverInstallation::*, Properties::DEVPKEY_Device_ContainerId},
-    Foundation::{CloseHandle, DEVPROPKEY, INVALID_HANDLE_VALUE},
-    Storage::FileSystem::{CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING},
+    Foundation::{
+        CloseHandle, DEVPROPKEY, GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
+    },
+    Storage::FileSystem::{
+        CreateFileW, FILE_FLAG_OVERLAPPED, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+        ReadFile,
+    },
+    System::{
+        IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED},
+        Threading::{CreateEventW, ResetEvent, WaitForSingleObject},
+    },
 };
 
 fn wide(value: &str) -> Vec<u16> {
@@ -132,6 +141,10 @@ fn supported(info: &DeviceInfo) -> bool {
         && matches!(info.usage_page(), 0xff05 | 0xff02))
         || (info.vendor_id() == 0x3654
             && info.product_id() == 0x6901
+            && info.usage_page() == 0xff02
+            && info.usage() == 2)
+        || (info.vendor_id() == 0x3554
+            && info.product_id() == 0xfa09
             && info.usage_page() == 0xff02
             && info.usage() == 2)
 }
@@ -274,15 +287,188 @@ fn headset(api: &HidApi, info: &DeviceInfo) -> Result<(Option<u8>, String), Stri
     Ok((battery, name))
 }
 
+/// KZZI keyboards behind a Compx 2.4G receiver. This interface only answers
+/// requests written through the control endpoint (HidD_SetOutputReport) and
+/// hidapi's buffer handling fails there (error 1784), so the exchange runs on
+/// raw Windows handles: one handle for writes, one overlapped handle for reads.
+struct KzziLink {
+    writer: *mut std::ffi::c_void,
+    reader: *mut std::ffi::c_void,
+    event: *mut std::ffi::c_void,
+}
+
+impl KzziLink {
+    fn open(path: &str) -> Result<Self, String> {
+        let path = wide(path);
+        let writer = unsafe {
+            CreateFileW(
+                path.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                0,
+                std::ptr::null_mut(),
+            )
+        };
+        if writer == INVALID_HANDLE_VALUE {
+            return Err("无法打开键盘接口".into());
+        }
+        let reader = unsafe {
+            CreateFileW(
+                path.as_ptr(),
+                GENERIC_READ,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_OVERLAPPED,
+                std::ptr::null_mut(),
+            )
+        };
+        if reader == INVALID_HANDLE_VALUE {
+            unsafe { CloseHandle(writer) };
+            return Err("无法读取键盘接口".into());
+        }
+        let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+        if event.is_null() {
+            unsafe {
+                CloseHandle(writer);
+                CloseHandle(reader);
+            }
+            return Err("无法创建键盘读事件".into());
+        }
+        Ok(Self {
+            writer,
+            reader,
+            event,
+        })
+    }
+
+    fn send(&self, frame: &[u8; 20]) -> Result<(), String> {
+        let ok =
+            unsafe { HidD_SetOutputReport(self.writer, frame.as_ptr().cast(), frame.len() as u32) };
+        if ok {
+            Ok(())
+        } else {
+            Err("键盘命令发送失败".into())
+        }
+    }
+
+    /// Cancel a pending overlapped read so the handle stays reusable.
+    fn cancel(&self, pending: &mut OVERLAPPED) {
+        unsafe {
+            CancelIoEx(self.reader, pending as *mut _ as *mut _);
+            WaitForSingleObject(self.event, 200);
+            let mut read = 0u32;
+            GetOverlappedResult(self.reader, pending, &mut read, 0);
+        }
+    }
+
+    fn read(&self, buffer: &mut [u8], timeout: Duration) -> Option<usize> {
+        let mut pending: OVERLAPPED = unsafe { std::mem::zeroed() };
+        pending.hEvent = self.event;
+        let mut read = 0u32;
+        unsafe { ResetEvent(self.event) };
+        let started = unsafe {
+            ReadFile(
+                self.reader,
+                buffer.as_mut_ptr().cast(),
+                buffer.len() as u32,
+                &mut read,
+                &mut pending,
+            )
+        };
+        if started != 0 {
+            return (read > 0).then_some(read as usize);
+        }
+        let deadline = Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                self.cancel(&mut pending);
+                return None;
+            }
+            let wait =
+                unsafe { WaitForSingleObject(self.event, remaining.as_millis().max(1) as u32) };
+            if wait == WAIT_OBJECT_0 {
+                let done = unsafe { GetOverlappedResult(self.reader, &pending, &mut read, 0) };
+                return (done != 0 && read > 0).then_some(read as usize);
+            }
+        }
+    }
+
+    fn drain(&self) {
+        let mut buffer = [0u8; 64];
+        for _ in 0..32 {
+            if self.read(&mut buffer, Duration::from_millis(8)).is_none() {
+                break;
+            }
+        }
+    }
+}
+
+impl Drop for KzziLink {
+    fn drop(&mut self) {
+        unsafe {
+            CancelIoEx(self.reader, std::ptr::null_mut());
+            CloseHandle(self.event);
+            CloseHandle(self.reader);
+            CloseHandle(self.writer);
+        }
+    }
+}
+
+/// KZZI keyboards behind a Compx 2.4G receiver: the receiver answers identity
+/// itself, battery queries are relayed to the keyboard and only models whose
+/// firmware implements them reply.
+fn keyboard(info: &DeviceInfo) -> Result<(Option<u8>, String), String> {
+    let link = KzziLink::open(&info.path().to_string_lossy())?;
+    let mut buffer = [0u8; 64];
+    let mut name = String::new();
+    for _ in 0..3 {
+        link.drain();
+        link.send(&protocol::kzzi_identity_request())?;
+        let end = Instant::now() + Duration::from_millis(600);
+        while name.is_empty() && Instant::now() < end {
+            if let Some(n) = link.read(&mut buffer, Duration::from_millis(120))
+                && let Some(psd) = protocol::kzzi_identity(&buffer[..n])
+            {
+                name = protocol::kzzi_model_name(&psd)
+                    .unwrap_or("无线键盘")
+                    .to_string();
+            }
+        }
+        if !name.is_empty() {
+            break;
+        }
+    }
+    for _ in 0..3 {
+        link.drain();
+        link.send(&protocol::kzzi_request(0x4a))?;
+        let end = Instant::now() + Duration::from_millis(900);
+        while Instant::now() < end {
+            if let Some(n) = link.read(&mut buffer, Duration::from_millis(120))
+                && let Some((level, _)) = protocol::kzzi_battery(&buffer[..n])
+            {
+                return Ok((Some(level), name));
+            }
+        }
+    }
+    Ok((None, name))
+}
+
 pub fn scan() -> Result<Vec<Reading>, String> {
     let api = HidApi::new().map_err(|_| "暂时无法读取设备，请稍后刷新".to_string())?;
     let mut result = Vec::new();
     for (physical_id, interfaces) in receiver_interfaces(&api) {
         let info = interfaces[0];
+        let vendor = info.vendor_id();
         let mut reading = Reading {
             physical_id,
-            kind: if info.vendor_id() == 0x373b {
+            kind: if vendor == 0x373b {
                 "mouse"
+            } else if vendor == 0x3554 {
+                "keyboard"
             } else {
                 "headset"
             }
@@ -294,7 +480,7 @@ pub fn scan() -> Result<Vec<Reading>, String> {
             battery: None,
             message: String::new(),
         };
-        if info.vendor_id() == 0x373b {
+        if vendor == 0x373b {
             match mouse(&api, info) {
                 Ok(level) => {
                     reading.battery = Some(level);
@@ -307,6 +493,23 @@ pub fn scan() -> Result<Vec<Reading>, String> {
                         "读取失败，请重新连接设备后刷新".into()
                     }
                 }
+            }
+        } else if vendor == 0x3554 {
+            match keyboard(info) {
+                Ok((battery, name)) => {
+                    let identified = !name.is_empty();
+                    reading.battery = battery;
+                    if identified {
+                        reading.hardware_name = name;
+                    }
+                    reading.message = if battery.is_some() || identified {
+                        "已连接"
+                    } else {
+                        "键盘未响应，请确认键盘已开机"
+                    }
+                    .into();
+                }
+                Err(_) => reading.message = "读取失败，请重新连接设备后刷新".into(),
             }
         } else {
             match headset(&api, info) {

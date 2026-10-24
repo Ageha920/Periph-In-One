@@ -70,3 +70,84 @@ pub fn darkrim_tlvs(report: &[u8], expected_seq: u8) -> Option<Vec<(u8, &[u8])>>
     }
     Some(tlvs)
 }
+
+/// KZZI/Compx 2.4G receiver frames: report id 0x13, 20 bytes, the last byte
+/// being the sum of the previous 19. The battery layout follows the vendor
+/// driver captures mirrored by womier-l65-linux and sanshoku issue 36.
+pub fn kzzi_request(command: u8) -> [u8; 20] {
+    let mut frame = [0; 20];
+    frame[0] = 0x13;
+    frame[1] = command;
+    frame[19] = frame[..19]
+        .iter()
+        .fold(0u8, |sum, &byte| sum.wrapping_add(byte));
+    frame
+}
+
+/// The identity request answers with npkg=1 in byte 2 on this receiver.
+pub fn kzzi_identity_request() -> [u8; 20] {
+    let mut frame = kzzi_request(0x05);
+    frame[2] = 1;
+    frame[19] = frame[..19]
+        .iter()
+        .fold(0u8, |sum, &byte| sum.wrapping_add(byte));
+    frame
+}
+
+fn kzzi_frame_ok(report: &[u8]) -> bool {
+    report.len() == 20
+        && report[0] == 0x13
+        && report[..19]
+            .iter()
+            .fold(0u8, |sum, &byte| sum.wrapping_add(byte))
+            == report[19]
+}
+
+/// Identity reply carries the vendor profile signature (PSD) in bytes 5..11.
+pub fn kzzi_identity(report: &[u8]) -> Option<[u8; 6]> {
+    if !kzzi_frame_ok(report) || report[1] != 0x05 {
+        return None;
+    }
+    let mut psd = [0; 6];
+    psd.copy_from_slice(&report[5..11]);
+    Some(psd)
+}
+
+/// Battery reply: (level, state); 0x01 on battery, 0x10 cable/charging.
+/// The receiver streams unrelated 0x13 frames, so the command nibble, the
+/// checksum and the 1..=100 level range all gate a reading.
+pub fn kzzi_battery(report: &[u8]) -> Option<(u8, u8)> {
+    if !kzzi_frame_ok(report) || report[1] & 0x7f != 0x4a {
+        return None;
+    }
+    let (level, state) = (report[5], report[6]);
+    ((1..=100).contains(&level)).then_some((level, state))
+}
+
+/// Model names keyed by the profile signature recorded in the vendor driver's
+/// device profiles (Dev/*/KB.ini Psd= hex values, names from Cfg.ini DevName).
+pub fn kzzi_model_name(psd: &[u8]) -> Option<&'static str> {
+    Some(match psd {
+        [2, 0, 0, 0, 0, 54] => "Kzzi-K75 RGB",
+        [2, 0, 0, 0, 0, 55] => "Kzzi-K75 RGB key",
+        [3, 0, 0, 0, 0, 2] => "Kzzi-K68",
+        [3, 0, 0, 0, 0, 4] => "Kzzi-K84",
+        [3, 0, 0, 0, 0, 103] => "Kzzi-K75Pro",
+        [3, 0, 0, 0, 0, 224] => "Kzzi-K20RGB",
+        [3, 0, 0, 0, 0, 252] => "Kzzi-K68Pro",
+        [3, 0, 0, 0, 1, 10] => "Kzzi-K98",
+        [3, 0, 0, 0, 1, 52] => "Kzzi-K87",
+        [3, 0, 0, 0, 1, 68] => "KZZI-K75RGB Lite",
+        [3, 0, 0, 0, 1, 104] => "Kzzi-i75 RGB",
+        [3, 0, 0, 0, 1, 215] => "Kzzi-K87MAX",
+        [3, 0, 0, 0, 3, 162] => "Kzzi-K75V2",
+        [3, 0, 0, 0, 3, 187] => "Kzzi-Z75",
+        [3, 0, 0, 0, 3, 215] => "Kzzi K98V2",
+        [3, 0, 0, 0, 3, 243] => "Kzzi-i98",
+        [3, 0, 0, 0, 3, 247] => "Kzzi-i20",
+        [3, 0, 0, 0, 5, 62] => "Kzzi-i98",
+        [6, 0, 0, 0, 0, 1] => "Kzzi-Z98",
+        [6, 0, 0, 0, 0, 29] => "Kzzi-K21",
+        _ => return None,
+    })
+}

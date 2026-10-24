@@ -59,6 +59,62 @@ fn mouse_requires_correct_reply_and_valid_percentage() {
 }
 
 #[test]
+fn kzzi_requests_carry_the_receiver_checksum() {
+    let battery = kzzi_request(0x4a);
+    assert_eq!(&battery[..4], &[0x13, 0x4a, 0, 0]);
+    assert_eq!(battery[19], 0x5d);
+    let identity = kzzi_identity_request();
+    assert_eq!(&identity[..4], &[0x13, 0x05, 1, 0]);
+    assert_eq!(identity[19], 0x19);
+    // A battery request parses as a zero level, never as a reading.
+    assert_eq!(kzzi_battery(&battery), None);
+}
+
+#[test]
+fn kzzi_battery_reply_requires_checksum_command_and_level_range() {
+    let mut reply =
+        *b"\x13\x4a\x01\x00\x02\x61\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xc2";
+    assert_eq!(kzzi_battery(&reply), Some((0x61, 0x01)));
+    reply[5] = 100;
+    reply[6] = 0x10;
+    reply[19] = reply[..19].iter().fold(0u8, |s, &b| s.wrapping_add(b));
+    assert_eq!(kzzi_battery(&reply), Some((100, 0x10)));
+    for level in [0u8, 101] {
+        reply[5] = level;
+        reply[19] = reply[..19].iter().fold(0u8, |s, &b| s.wrapping_add(b));
+        assert_eq!(kzzi_battery(&reply), None);
+    }
+    reply[19] ^= 1;
+    assert_eq!(kzzi_battery(&reply), None);
+    assert_eq!(kzzi_battery(&reply[..12]), None);
+    assert_eq!(kzzi_battery(&[]), None);
+    // Unrelated frames the receiver also streams must be ignored.
+    let mut status =
+        *b"\x13\x0a\x01\x00\x02\x61\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x9b";
+    status[19] = status[..19].iter().fold(0u8, |s, &b| s.wrapping_add(b));
+    assert_eq!(kzzi_battery(&status), None);
+}
+
+#[test]
+fn kzzi_identity_reply_yields_the_model_signature() {
+    let reply =
+        *b"\x13\x05\x01\x00\x0a\x02\x00\x00\x00\x00\x37\x00\x01\x00\x00\x00\x00\x00\x00\x5d";
+    assert_eq!(kzzi_identity(&reply), Some([2, 0, 0, 0, 0, 55]));
+    assert_eq!(
+        kzzi_model_name(&[2, 0, 0, 0, 0, 55]),
+        Some("Kzzi-K75 RGB key")
+    );
+    assert_eq!(kzzi_model_name(&[2, 0, 0, 0, 0, 54]), Some("Kzzi-K75 RGB"));
+    assert_eq!(kzzi_model_name(&[9, 9, 9, 9, 9, 9]), None);
+    let mut corrupt = reply;
+    corrupt[19] ^= 1;
+    assert_eq!(kzzi_identity(&corrupt), None);
+    assert_eq!(kzzi_identity(&reply[..9]), None);
+    // A battery reply is not an identity reply.
+    assert_eq!(kzzi_identity(kzzi_request(0x4a).as_slice()), None);
+}
+
+#[test]
 fn remarks_follow_serial_across_ports_and_stale_values_are_retained() {
     let first = model::merge_readings(&[], vec![reading("usb-port-a", "SN-A", Some(73))], 100);
     let mut saved: Vec<_> = first.iter().map(|d| d.saved.clone()).collect();
