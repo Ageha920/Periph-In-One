@@ -7,7 +7,7 @@ use std::{
 };
 use windows_sys::Win32::{
     Devices::HumanInterfaceDevice::{HidD_GetSerialNumberString, HidD_SetOutputReport},
-    Devices::{DeviceAndDriverInstallation::*, Properties::DEVPKEY_Device_ContainerId},
+    Devices::{DeviceAndDriverInstallation::*, Properties::{DEVPKEY_Device_ContainerId, DEVPKEY_Device_Parent}},
     Foundation::{
         CloseHandle, DEVPROPKEY, GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
     },
@@ -56,13 +56,13 @@ fn raw_serial_number(info: &DeviceInfo) -> String {
     }
 }
 
-/// Windows groups all interfaces of a physical receiver using its ContainerId.
-/// This is an internal local identifier, never displayed as a hardware serial.
-fn container_id(info: &DeviceInfo) -> String {
+/// Resolve the devnode behind a HID interface and read one device property
+/// into `buffer`, returning the property size in bytes.
+fn device_property(info: &DeviceInfo, key: &DEVPROPKEY, buffer: &mut [u8]) -> Option<usize> {
     unsafe {
         let set = SetupDiCreateDeviceInfoList(std::ptr::null(), std::ptr::null_mut());
         if set == -1 {
-            return info.path().to_string_lossy().into_owned();
+            return None;
         }
         let result = (|| {
             let mut interface = SP_DEVICE_INTERFACE_DATA {
@@ -111,27 +111,119 @@ fn container_id(info: &DeviceInfo) -> String {
             {
                 return None;
             }
-            let mut value = [0u8; 16];
             let mut kind = 0;
-            let key: DEVPROPKEY = DEVPKEY_Device_ContainerId;
-            if SetupDiGetDevicePropertyW(
+            let mut size = 0;
+            (SetupDiGetDevicePropertyW(
                 set,
                 &device,
-                &key,
+                key,
                 &mut kind,
-                value.as_mut_ptr(),
-                16,
+                buffer.as_mut_ptr(),
+                buffer.len() as u32,
+                &mut size,
+                0,
+            ) != 0)
+                .then_some(size as usize)
+        })();
+        SetupDiDestroyDeviceInfoList(set);
+        result
+    }
+}
+
+/// Windows groups all interfaces of a physical receiver using its ContainerId.
+/// This is an internal local identifier, never displayed as a hardware serial.
+fn container_id(info: &DeviceInfo) -> String {
+    let mut value = [0u8; 16];
+    let read = device_property(info, &DEVPKEY_Device_ContainerId, &mut value).unwrap_or(0);
+    if read == value.len() && value != [0; 16] {
+        return value.iter().map(|b| format!("{b:02x}")).collect();
+    }
+    info.path().to_string_lossy().into_owned()
+}
+
+/// Parse a UTF-16LE device property buffer into a String.
+fn property_string(buffer: &[u8]) -> String {
+    let units: Vec<u16> = buffer
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u16::from_le_bytes(*pair))
+        .collect();
+    let end = units.iter().position(|&c| c == 0).unwrap_or(units.len());
+    String::from_utf16_lossy(&units[..end])
+}
+
+/// Read one device property from a devnode addressed by instance id.
+fn instance_property(instance: &[u16], key: &DEVPROPKEY, buffer: &mut [u8]) -> Option<usize> {
+    unsafe {
+        let set = SetupDiCreateDeviceInfoList(std::ptr::null(), std::ptr::null_mut());
+        if set == -1 {
+            return None;
+        }
+        let result = (|| {
+            let mut device = SP_DEVINFO_DATA {
+                cbSize: std::mem::size_of::<SP_DEVINFO_DATA>() as u32,
+                ..std::mem::zeroed()
+            };
+            if SetupDiOpenDeviceInfoW(
+                set,
+                instance.as_ptr(),
                 std::ptr::null_mut(),
                 0,
+                &mut device,
             ) == 0
-                || value == [0; 16]
             {
                 return None;
             }
-            Some(value.iter().map(|b| format!("{b:02x}")).collect::<String>())
+            let mut kind = 0;
+            let mut size = 0;
+            (SetupDiGetDevicePropertyW(
+                set,
+                &device,
+                key,
+                &mut kind,
+                buffer.as_mut_ptr(),
+                buffer.len() as u32,
+                &mut size,
+                0,
+            ) != 0)
+                .then_some(size as usize)
         })();
         SetupDiDestroyDeviceInfoList(set);
-        result.unwrap_or_else(|| info.path().to_string_lossy().into_owned())
+        result
+    }
+}
+
+/// The physical USB node's location suffix (e.g. 6&3af0f9ce&0&8) tracks the
+/// port. The immediate parent of a HID interface differs per firmware
+/// personality - composite modes add a &MI_ function node and the instance
+/// embeds the personality pid - so the chain is climbed to the node without
+/// &MI_, whose location suffix survives re-enumeration and the 2104/2106
+/// switch. The suffix is case-normalized: Windows varies it between runs.
+fn port_location(info: &DeviceInfo) -> String {
+    let fallback = || info.path().to_string_lossy().into_owned();
+    let mut buffer = [0u8; 1024];
+    let mut node = match device_property(info, &DEVPKEY_Device_Parent, &mut buffer) {
+        Some(read) if read >= 2 && read <= buffer.len() => property_string(&buffer[..read]),
+        _ => return fallback(),
+    };
+    for _ in 0..3 {
+        if !node.contains("&MI_") {
+            break;
+        }
+        let wide: Vec<u16> = node.encode_utf16().chain(Some(0)).collect();
+        match instance_property(&wide, &DEVPKEY_Device_Parent, &mut buffer) {
+            Some(read) if read >= 2 && read <= buffer.len() => {
+                node = property_string(&buffer[..read]);
+            }
+            _ => break,
+        }
+    }
+    let location = node.rsplit('\\').next().unwrap_or_default().to_lowercase();
+    if location.is_empty() {
+        fallback()
+    } else {
+        location
     }
 }
 
@@ -464,8 +556,10 @@ fn keyboard(info: &DeviceInfo) -> Result<(Option<u8>, String), String> {
 /// BIGBIG WON controllers (GALE 烈风 family and other Zikway models). The
 /// vendor interface answers GetDevicePowerInfo only while the controller is
 /// linked and running its composite gamepad personality; asleep or unlinked
-/// devices enumerate but stay silent.
-fn gamepad(api: &HidApi, info: &DeviceInfo) -> Result<u8, String> {
+/// devices enumerate but stay silent. While linked, GetUUID reports the
+/// 8-byte per-unit identity that anchors the record across personalities
+/// and ports.
+fn gamepad(api: &HidApi, info: &DeviceInfo) -> Result<(Option<u8>, String), String> {
     let (reader, writer) = open_pair(api, info)?;
     let mut buffer = [0; 256];
     for _ in 0..3 {
@@ -480,21 +574,44 @@ fn gamepad(api: &HidApi, info: &DeviceInfo) -> Result<u8, String> {
                 continue;
             }
             if let Some(level) = protocol::bigbigwon_battery(&buffer[..n]) {
-                return Ok(level);
+                return Ok((Some(level), gamepad_uid(&reader, &writer)));
             }
         }
     }
     Err("手柄未响应，请唤醒手柄后刷新".into())
 }
 
+fn gamepad_uid(reader: &HidDevice, writer: &HidDevice) -> String {
+    let mut buffer = [0u8; 256];
+    for _ in 0..2 {
+        drain(reader);
+        if send(writer, &protocol::bigbigwon_uuid_request()).is_err() {
+            return String::new();
+        }
+        let end = Instant::now() + Duration::from_millis(400);
+        while Instant::now() < end {
+            let Ok(n) = reader.read_timeout(&mut buffer, 80) else {
+                return String::new();
+            };
+            if n == 0 {
+                continue;
+            }
+            if let Some(uuid) = protocol::bigbigwon_uuid(&buffer[..n]) {
+                return uuid.iter().map(|b| format!("{b:02x}")).collect();
+            }
+        }
+    }
+    String::new()
+}
+
 pub fn scan() -> Result<Vec<Reading>, String> {
     let api = HidApi::new().map_err(|_| "暂时无法读取设备，请稍后刷新".to_string())?;
     let mut result = Vec::new();
-    for (physical_id, interfaces) in receiver_interfaces(&api) {
+    for (_, interfaces) in receiver_interfaces(&api) {
         let info = interfaces[0];
         let vendor = info.vendor_id();
         let mut reading = Reading {
-            physical_id,
+            physical_id: port_location(info),
             kind: if vendor == 0x373b {
                 "mouse"
             } else if vendor == 0x3554 {
@@ -507,6 +624,7 @@ pub fn scan() -> Result<Vec<Reading>, String> {
             .into(),
             hardware_name: info.product_string().unwrap_or("未提供硬件名称").into(),
             serial: raw_serial_number(info),
+            uid: String::new(),
             vid: info.vendor_id(),
             pid: info.product_id(),
             battery: None,
@@ -545,8 +663,9 @@ pub fn scan() -> Result<Vec<Reading>, String> {
             }
         } else if vendor == 0x413d {
             match gamepad(&api, info) {
-                Ok(level) => {
-                    reading.battery = Some(level);
+                Ok((level, uid)) => {
+                    reading.battery = level;
+                    reading.uid = uid;
                     reading.message = "已连接".into();
                 }
                 Err(error) => {

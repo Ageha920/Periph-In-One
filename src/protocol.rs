@@ -180,3 +180,36 @@ pub fn bigbigwon_battery(report: &[u8]) -> Option<u8> {
     let level = report[3];
     (level <= 100).then_some(level)
 }
+
+/// GetUUID asks with eight zero selector bytes, mirroring the official
+/// client: A5 0C EF 00×8 <sum>. Verified live: the linked controller answers
+/// A5 0C EF <8 uuid bytes> <sum> and the idle personality stays silent.
+pub fn bigbigwon_uuid_request() -> [u8; 65] {
+    let mut report = [0; 65];
+    report[1] = 0xa5;
+    report[2] = 0x0c;
+    report[3] = 0xef;
+    report[12] = report[1..12]
+        .iter()
+        .fold(0u8, |sum, byte| sum.wrapping_add(*byte));
+    report
+}
+
+pub fn bigbigwon_uuid(report: &[u8]) -> Option<[u8; 8]> {
+    if report.first() != Some(&0xa5) {
+        return None;
+    }
+    let total = *report.get(1)? as usize;
+    if total != 12 || total > report.len() || report[2] != 0xef {
+        return None;
+    }
+    let sum = report[..total - 1]
+        .iter()
+        .fold(0u8, |sum, byte| sum.wrapping_add(*byte));
+    if report[total - 1] != sum {
+        return None;
+    }
+    let mut uuid = [0; 8];
+    uuid.copy_from_slice(&report[3..11]);
+    Some(uuid)
+}

@@ -9,6 +9,7 @@ pub struct SavedDevice {
     pub kind: String,
     pub hardware_name: String,
     pub serial: String,
+    pub uid: String,
     pub vid: u16,
     pub pid: u16,
     pub alias: String,
@@ -23,6 +24,7 @@ pub struct Reading {
     pub kind: String,
     pub hardware_name: String,
     pub serial: String,
+    pub uid: String,
     pub vid: u16,
     pub pid: u16,
     pub battery: Option<u8>,
@@ -40,6 +42,12 @@ pub struct Device {
 pub fn serial_key(vid: u16, pid: u16, serial: &str) -> String {
     // JSON tuple avoids ambiguous concatenations, and does not normalize case.
     format!("sn:{}", serde_json::to_string(&(vid, pid, serial)).unwrap())
+}
+
+/// The protocol-reported per-unit identity. The pid is deliberately absent:
+/// vendors reuse one uid across firmware personalities whose pid differs.
+pub fn uid_key(vid: u16, uid: &str) -> String {
+    format!("uid:{}", serde_json::to_string(&(vid, uid)).unwrap())
 }
 
 pub fn usb_id_label(vid: u16, pid: u16) -> String {
@@ -86,13 +94,18 @@ fn reconcile_record(devices: &mut Vec<Device>, reading: &Reading, id: &str) -> u
             let saved = &device.saved;
             (saved.id == id
                 || (!device.present
-                    && saved.id.starts_with("local:")
-                    && (saved.vid, saved.pid) == (reading.vid, reading.pid)
+                    && saved.vid == reading.vid
+                    && saved_physical_id(saved).as_deref() == Some(reading.physical_id.as_str())
+                    // One port holds one device at a time, so the port anchors
+                    // cross-personality merges; uid and serial must never
+                    // contradict it.
+                    && (saved.uid.is_empty()
+                        || reading.uid.is_empty()
+                        || saved.uid == reading.uid)
                     && (saved.serial.is_empty()
                         || reading.serial.is_empty()
                         || saved.serial == reading.serial
-                        || name_used_as_serial(&saved.serial, &saved.hardware_name))
-                    && saved_physical_id(saved).as_deref() == Some(&reading.physical_id)))
+                        || name_used_as_serial(&saved.serial, &saved.hardware_name))))
             .then_some(i)
         })
         .collect();
@@ -113,7 +126,11 @@ fn reconcile_record(devices: &mut Vec<Device>, reading: &Reading, id: &str) -> u
         return devices.len() - 1;
     };
     let mut merged = devices[index].clone();
-    merged.saved.id = id.into();
+    // A local id is the weakest identity: a topology-only reading must never
+    // downgrade a uid- or serial-keyed record.
+    if merged.saved.id.starts_with("local:") || !id.starts_with("local:") {
+        merged.saved.id = id.into();
+    }
     if merged.saved.alias.is_empty()
         && let Some(source) = candidates
             .iter()
@@ -206,12 +223,14 @@ pub fn merge_readings(saved: &[SavedDevice], readings: Vec<Reading>, now: u64) -
         } else {
             None
         };
-        let id = if let Some(serial) = &retained_serial {
+        let id = if !reading.uid.is_empty() {
+            uid_key(reading.vid, &reading.uid)
+        } else if let Some(serial) = &retained_serial {
             serial_key(reading.vid, reading.pid, serial)
         } else if reading.serial.is_empty() || conflict {
             format!(
                 "local:{}",
-                serde_json::to_string(&(reading.vid, reading.pid, &reading.physical_id)).unwrap()
+                serde_json::to_string(&(reading.vid, &reading.physical_id)).unwrap()
             )
         } else {
             serial_id
@@ -224,6 +243,9 @@ pub fn merge_readings(saved: &[SavedDevice], readings: Vec<Reading>, now: u64) -
             device.saved.hardware_name = reading.hardware_name;
         }
         device.saved.serial = retained_serial.unwrap_or(reading.serial);
+        if !reading.uid.is_empty() {
+            device.saved.uid = reading.uid.clone();
+        }
         device.saved.vid = reading.vid;
         device.saved.pid = reading.pid;
         device.saved.identity_conflict |= conflict;

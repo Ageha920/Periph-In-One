@@ -10,8 +10,27 @@ fn reading(physical: &str, serial: &str, battery: Option<u8>) -> Reading {
         kind: "mouse".into(),
         hardware_name: "Receiver".into(),
         serial: serial.into(),
+        uid: String::new(),
         vid: 0x373b,
         pid: 0x1216,
+        battery,
+        message: String::new(),
+    }
+}
+
+fn gamepad_reading(physical: &str, uid: &str, pid: u16, battery: Option<u8>) -> Reading {
+    Reading {
+        physical_id: physical.into(),
+        kind: "gamepad".into(),
+        hardware_name: if uid.is_empty() {
+            "HID zkm".into()
+        } else {
+            "XBOX 360 For Windows".into()
+        },
+        serial: String::new(),
+        uid: uid.into(),
+        vid: 0x413d,
+        pid,
         battery,
         message: String::new(),
     }
@@ -369,4 +388,105 @@ fn bigbigwon_battery_rejects_bad_frames() {
     assert_eq!(bigbigwon_battery(&[0xa5, 0xff, 0x04, 0x58]), None);
     // Zero length byte must not underflow.
     assert_eq!(bigbigwon_battery(&[0xa5, 0x00]), None);
+}
+
+#[test]
+fn bigbigwon_uuid_request_mirrors_the_official_client() {
+    let request = bigbigwon_uuid_request();
+    assert_eq!(request.len(), 65);
+    assert_eq!(&request[1..4], &[0xa5, 0x0c, 0xef]);
+    assert_eq!(request[12], 0xa0);
+    assert!(request[13..].iter().all(|&byte| byte == 0));
+}
+
+#[test]
+fn bigbigwon_uuid_parses_the_captured_identity_reply() {
+    // Captured live from a linked GALE controller.
+    let reply = [
+        0xa5, 0x0c, 0xef, 0x42, 0x3b, 0xca, 0x92, 0x86, 0x3c, 0xba, 0x8d, 0x82,
+    ];
+    assert_eq!(
+        bigbigwon_uuid(&reply),
+        Some([0x42, 0x3b, 0xca, 0x92, 0x86, 0x3c, 0xba, 0x8d])
+    );
+    // The trailing zeros of the hidapi report must not disturb parsing.
+    let mut padded = [0u8; 64];
+    padded[..reply.len()].copy_from_slice(&reply);
+    assert_eq!(
+        bigbigwon_uuid(&padded),
+        Some([0x42, 0x3b, 0xca, 0x92, 0x86, 0x3c, 0xba, 0x8d])
+    );
+    let mut corrupt = reply;
+    corrupt[11] ^= 1;
+    assert_eq!(bigbigwon_uuid(&corrupt), None);
+    // Wrong opcode echo and truncated frames.
+    assert_eq!(bigbigwon_uuid(&[0xa5, 0x0c, 0x04, 0, 0, 0, 0, 0, 0, 0, 0, 0]), None);
+    assert_eq!(bigbigwon_uuid(&[0xa5, 0x0c, 0xef, 0x42]), None);
+    assert_eq!(bigbigwon_uuid(&[]), None);
+}
+
+#[test]
+fn uid_anchors_identity_across_personalities_and_silent_docking() {
+    let first = model::merge_readings(
+        &[],
+        vec![gamepad_reading("port-1", "423bca92863cba8d", 0x2104, Some(91))],
+        1,
+    );
+    assert!(first[0].saved.id.starts_with("uid:"));
+    assert_eq!(first[0].saved.uid, "423bca92863cba8d");
+    let mut saved: Vec<_> = first.into_iter().map(|d| d.saved).collect();
+    saved[0].alias = "客厅手柄".into();
+    // Docked on the same port: idle personality pid, silent, no uid.
+    let second = model::merge_readings(
+        &saved,
+        vec![gamepad_reading("port-1", "", 0x2106, None)],
+        2,
+    );
+    assert_eq!(second.len(), 1);
+    assert!(second[0].present);
+    assert_eq!(second[0].saved.pid, 0x2106);
+    assert_eq!(second[0].saved.uid, "423bca92863cba8d");
+    assert!(second[0].saved.id.starts_with("uid:"));
+    let saved: Vec<_> = second.into_iter().map(|d| d.saved).collect();
+    let third = model::merge_readings(
+        &saved,
+        vec![gamepad_reading("port-1", "423bca92863cba8d", 0x2104, Some(88))],
+        3,
+    );
+    assert_eq!(third.len(), 1);
+    assert_eq!(third[0].saved.alias, "客厅手柄");
+    assert_eq!(third[0].saved.battery, Some(88));
+    assert_eq!(third[0].saved.pid, 0x2104);
+}
+
+#[test]
+fn a_uid_reading_adopts_the_earlier_docked_record() {
+    let first = model::merge_readings(&[], vec![gamepad_reading("port-1", "", 0x2106, None)], 1);
+    assert!(first[0].saved.id.starts_with("local:"));
+    let mut saved: Vec<_> = first.into_iter().map(|d| d.saved).collect();
+    saved[0].alias = "客厅手柄".into();
+    let second = model::merge_readings(
+        &saved,
+        vec![gamepad_reading("port-1", "423bca92863cba8d", 0x2104, Some(90))],
+        2,
+    );
+    assert_eq!(second.len(), 1);
+    assert!(second[0].saved.id.starts_with("uid:"));
+    assert_eq!(second[0].saved.alias, "客厅手柄");
+    assert_eq!(second[0].saved.uid, "423bca92863cba8d");
+}
+
+#[test]
+fn different_uids_stay_separate_even_on_matching_reports() {
+    let devices = model::merge_readings(
+        &[],
+        vec![
+            gamepad_reading("port-1", "423bca92863cba8d", 0x2104, Some(91)),
+            gamepad_reading("port-2", "aabbccddeeff0011", 0x2104, Some(55)),
+        ],
+        1,
+    );
+    assert_eq!(devices.len(), 2);
+    let ids: Vec<_> = devices.iter().map(|d| d.saved.id.clone()).collect();
+    assert!(ids[0] != ids[1]);
 }
