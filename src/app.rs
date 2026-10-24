@@ -8,7 +8,6 @@ use periph_in_one::{
 use slint::{ComponentHandle, ModelRc, VecModel};
 use std::{
     cell::RefCell,
-    path::PathBuf,
     rc::Rc,
     sync::mpsc::{self, RecvTimeoutError, Sender},
     thread,
@@ -32,6 +31,7 @@ pub enum Action {
     Remark(String, String),
     Rebind(String, usize),
     Copy(String),
+    Saved(u64, Result<(), String>),
     Autostart(bool),
     Quit,
 }
@@ -39,6 +39,11 @@ pub enum Action {
 enum WorkerCommand {
     Refresh,
     Stop,
+}
+
+struct SaveRequest {
+    revision: u64,
+    config: Config,
 }
 
 thread_local! { static APP: RefCell<Option<Rc<RefCell<App>>>> = const { RefCell::new(None) }; }
@@ -56,10 +61,12 @@ struct App {
     ui: AppWindow,
     tray: TrayIcon,
     config: Config,
-    path: PathBuf,
     config_error: Option<String>,
     devices: Vec<Device>,
     worker: Sender<WorkerCommand>,
+    saver: Sender<SaveRequest>,
+    save_revision: u64,
+    save_notice: String,
     busy: bool,
     rebind_ids: Vec<String>,
     presenter: platform::Presenter,
@@ -134,19 +141,28 @@ impl App {
         }
     }
 
-    fn persist(&mut self) -> bool {
+    fn persist(&mut self, success: &str) -> bool {
         if self.config_error.is_some() {
             self.notice("无法保存修改，请检查 config/settings.json 后重启");
             return false;
         }
         self.config.devices = self.devices.iter().map(|d| d.saved.clone()).collect();
-        match self.config.save(&self.path) {
-            Ok(()) => true,
-            Err(_) => {
-                self.notice("保存失败，请检查目录权限和可用空间");
-                false
-            }
+        self.save_revision += 1;
+        if !success.is_empty() {
+            self.save_notice = success.into();
         }
+        if self
+            .saver
+            .send(SaveRequest {
+                revision: self.save_revision,
+                config: self.config.clone(),
+            })
+            .is_err()
+        {
+            self.notice("保存失败，请退出后重试");
+            return false;
+        }
+        true
     }
 
     fn save_size(&mut self) {
@@ -158,9 +174,11 @@ impl App {
             .window()
             .size()
             .to_logical(self.ui.window().scale_factor());
-        self.config.width = size.width;
-        self.config.height = size.height;
-        self.persist();
+        if self.config.width != size.width || self.config.height != size.height {
+            self.config.width = size.width;
+            self.config.height = size.height;
+            self.persist("");
+        }
     }
 
     fn update(&self) {
@@ -273,6 +291,8 @@ impl App {
                     self.busy = true;
                     self.ui.set_busy(true);
                     if self.worker.send(WorkerCommand::Refresh).is_err() {
+                        self.busy = false;
+                        self.ui.set_busy(false);
                         self.notice("读取线程已退出，请从托盘退出后重新启动");
                     }
                 }
@@ -291,9 +311,7 @@ impl App {
                         self.ui.set_updated(
                             format!("上次刷新 {}", Local::now().format("%H:%M:%S")).into(),
                         );
-                        if self.persist() {
-                            self.notice("");
-                        }
+                        self.persist("");
                     }
                     Err(error) => {
                         for device in &mut self.devices {
@@ -381,9 +399,8 @@ impl App {
                 if let Some(device) = self.devices.iter_mut().find(|d| d.saved.id == id) {
                     device.saved.alias = alias.into();
                 }
-                if self.persist() {
+                if self.persist("备注已保存") {
                     self.ui.set_editing(false);
-                    self.notice("备注已保存");
                 }
                 self.update();
             }
@@ -394,9 +411,8 @@ impl App {
                 };
                 match model::rebind(&mut self.devices, &source, &target) {
                     Ok(()) => {
-                        if self.persist() {
+                        if self.persist("备注已重新绑定") {
                             self.ui.set_editing(false);
-                            self.notice("备注已重新绑定");
                         }
                         self.update();
                     }
@@ -412,6 +428,24 @@ impl App {
                     match platform::copy_text(&device.saved.serial) {
                         Ok(()) => self.notice("接收器序列号已复制"),
                         Err(error) => self.notice(error),
+                    }
+                }
+            }
+            Action::Saved(revision, result) => {
+                // Older completions must not clear a newer error or confirm a
+                // modification that has not reached disk yet.
+                if revision == self.save_revision {
+                    match result {
+                        Ok(()) => {
+                            if !self.save_notice.is_empty() {
+                                let message = std::mem::take(&mut self.save_notice);
+                                self.notice(message);
+                            }
+                        }
+                        Err(error) => {
+                            self.save_notice.clear();
+                            self.notice(error);
+                        }
                     }
                 }
             }
@@ -543,14 +577,31 @@ pub fn run() -> Result<(), String> {
     let initial = model::merge_readings(&config.devices, vec![], now());
     let tray = tray_icon()?;
     let (sender, receiver) = mpsc::channel();
+    let (saver, saves) = mpsc::channel::<SaveRequest>();
+    // Keep durable atomic replacement, including sync_all, off the UI thread
+    // and independent of slow HID queries. FIFO snapshots preserve edit order.
+    let save_worker = thread::Builder::new()
+        .name("settings-writer".into())
+        .spawn(move || {
+            for request in saves {
+                let result = request
+                    .config
+                    .save(&path)
+                    .map_err(|_| "保存失败，请检查目录权限和可用空间".to_string());
+                post(Action::Saved(request.revision, result));
+            }
+        })
+        .map_err(|e| e.to_string())?;
     let app = Rc::new(RefCell::new(App {
         ui: ui.clone_strong(),
         tray,
         config,
-        path,
         config_error,
         devices: initial,
         worker: sender.clone(),
+        saver,
+        save_revision: 0,
+        save_notice: String::new(),
         busy: true,
         rebind_ids: vec![],
         presenter: platform::Presenter::default(),
@@ -620,6 +671,7 @@ pub fn run() -> Result<(), String> {
     drop(app);
     ui.hide().ok();
     let _ = worker.join();
+    let _ = save_worker.join();
     unsafe {
         windows_sys::Win32::System::Com::CoUninitialize();
     }

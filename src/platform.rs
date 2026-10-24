@@ -13,7 +13,6 @@ use windows::Win32::{
     UI::Shell::{FOLDERID_Startup, IShellLinkW, KF_FLAG_DEFAULT, SHGetKnownFolderPath, ShellLink},
 };
 use windows::core::{Interface, PCWSTR};
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
 use windows_sys::Win32::{
     Foundation::*,
     Graphics::{Dwm::*, Gdi::*},
@@ -226,12 +225,12 @@ unsafe extern "system" fn window_proc(
 }
 
 pub fn drag(window: &slint::Window) {
-    if let Some(handle) = hwnd(window) {
-        unsafe {
-            ReleaseCapture();
-            SendMessageW(handle, WM_NCLBUTTONDOWN, HTCAPTION as usize, 0);
-        }
-    }
+    // Winit queues the native drag and tracks capture/release. Entering a
+    // synchronous Windows move loop from a Slint pointer callback can swallow
+    // input while the callback is still on the stack.
+    window.with_winit_window(|native| {
+        let _ = native.drag_window();
+    });
 }
 
 pub fn center(window: &slint::Window) {
