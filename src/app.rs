@@ -92,14 +92,6 @@ fn timestamp(time: u64) -> String {
         .unwrap_or_else(|| "时间未知".into())
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn malformed_saved_timestamp_cannot_crash_the_panel() {
-        assert_eq!(super::timestamp(u64::MAX), "时间未知");
-    }
-}
-
 fn fallback_name(device: &Device) -> &str {
     if !device.saved.alias.is_empty() {
         &device.saved.alias
@@ -688,4 +680,12 @@ pub fn run() -> Result<(), String> {
         windows_sys::Win32::System::Com::CoUninitialize();
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn malformed_saved_timestamp_cannot_crash_the_panel() {
+        assert_eq!(super::timestamp(u64::MAX), "时间未知");
+    }
 }

@@ -513,6 +513,37 @@ pub fn set_autostart(enabled: bool) -> Result<(), String> {
     Ok(())
 }
 
+pub fn copy_text(text: &str) -> Result<(), String> {
+    use windows_sys::Win32::System::{DataExchange::*, Memory::*};
+    let bytes = wide(text);
+    unsafe {
+        if OpenClipboard(null_mut()) == 0 {
+            return Err("剪贴板正忙，请重试".into());
+        }
+        let result = (|| {
+            let handle = GlobalAlloc(GMEM_MOVEABLE, bytes.len() * 2);
+            if handle.is_null() {
+                return Err("无法分配剪贴板内存".into());
+            }
+            let pointer = GlobalLock(handle);
+            if pointer.is_null() {
+                GlobalFree(handle);
+                return Err("无法访问剪贴板内存".into());
+            }
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), pointer.cast::<u16>(), bytes.len());
+            GlobalUnlock(handle);
+            EmptyClipboard();
+            if SetClipboardData(13, handle).is_null() {
+                GlobalFree(handle);
+                return Err("无法复制到剪贴板".into());
+            }
+            Ok(())
+        })();
+        CloseClipboard();
+        result
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -557,36 +588,5 @@ mod tests {
             drop(link);
             windows::Win32::System::Com::CoUninitialize();
         }
-    }
-}
-
-pub fn copy_text(text: &str) -> Result<(), String> {
-    use windows_sys::Win32::System::{DataExchange::*, Memory::*};
-    let bytes = wide(text);
-    unsafe {
-        if OpenClipboard(null_mut()) == 0 {
-            return Err("剪贴板正忙，请重试".into());
-        }
-        let result = (|| {
-            let handle = GlobalAlloc(GMEM_MOVEABLE, bytes.len() * 2);
-            if handle.is_null() {
-                return Err("无法分配剪贴板内存".into());
-            }
-            let pointer = GlobalLock(handle);
-            if pointer.is_null() {
-                GlobalFree(handle);
-                return Err("无法访问剪贴板内存".into());
-            }
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), pointer.cast::<u16>(), bytes.len());
-            GlobalUnlock(handle);
-            EmptyClipboard();
-            if SetClipboardData(13, handle).is_null() {
-                GlobalFree(handle);
-                return Err("无法复制到剪贴板".into());
-            }
-            Ok(())
-        })();
-        CloseClipboard();
-        result
     }
 }
