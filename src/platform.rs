@@ -269,6 +269,10 @@ pub fn initial_show(ui: &AppWindow) -> Result<(), String> {
 }
 
 pub fn near_tray(ui: &AppWindow, anchor: Option<tray_icon::Rect>) -> Result<(), String> {
+    // Recreate the surface even if the panel was merely occluded rather than
+    // explicitly closed. Keep the Slint model/editor state, not native pixels.
+    ui.window().set_minimized(false);
+    ui.hide().map_err(|e| e.to_string())?;
     ui.show().map_err(|e| e.to_string())?;
     attach(ui)?;
     unsafe {
@@ -319,10 +323,13 @@ pub fn near_tray(ui: &AppWindow, anchor: Option<tray_icon::Rect>) -> Result<(), 
         y = y.clamp(work.top + 8, (work.bottom - height - 8).max(work.top + 8));
         ui.window().set_position(slint::PhysicalPosition::new(x, y));
         if let Some(handle) = hwnd(ui) {
-            ShowWindow(handle, SW_RESTORE);
+            if IsIconic(handle) != 0 {
+                ShowWindow(handle, SW_RESTORE);
+            }
             SetForegroundWindow(handle);
         }
     }
+    ui.window().request_redraw();
     Ok(())
 }
 

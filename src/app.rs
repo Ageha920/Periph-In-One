@@ -465,6 +465,13 @@ fn tray_icon() -> Result<TrayIcon, String> {
 }
 
 pub fn run() -> Result<(), String> {
+    // Slint 1.17 supports recreating the native surface when a window is
+    // hidden. Windows can discard a hidden softbuffer without resetting its
+    // buffer age, so reusing it paints only changed controls on restore.
+    // Set the backend option before selecting it or starting worker threads.
+    unsafe {
+        std::env::set_var("SLINT_DESTROY_WINDOW_ON_HIDE", "1");
+    }
     let arguments: Vec<_> = std::env::args().skip(1).collect();
     if arguments.iter().any(|a| a == "--once") {
         let readings = devices::scan()?;
