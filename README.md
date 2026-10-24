@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/FoLeaf/Periph-In-One/releases">下载</a> ·
+  <a href="https://github.com/FoLeaf/Periph-In-One/releases">发布</a> ·
   <a href="#支持的设备">设备兼容</a> ·
   <a href="#从源码构建">源码构建</a> ·
   <a href="contribution.md">参与贡献</a>
@@ -42,8 +42,8 @@ Rust + Slint，使用软件渲染，无需 Python 或 WebView2 运行时。当�
 
 ## 开始使用
 
-1. 从 [Releases](https://github.com/FoLeaf/Periph-In-One/releases) 下载已有的 Windows x64 发布包，或按下文从源码构建。
-2. 解压到可写目录，运行 `periph-in-one.exe`，连接支持的接收器。
+1. 按下文从源码构建。当前 [Releases](https://github.com/FoLeaf/Periph-In-One/releases) 尚无公开发布包。
+2. 在可写目录运行 `periph-in-one.exe`，连接支持的接收器。
 3. 关闭窗口会收起到托盘。双击托盘图标打开微缩面板；完全退出使用托盘右键菜单中的“退出”。
 
 - 启动时立即读取，之后每 60 秒刷新；也可手动刷新。

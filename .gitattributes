@@ -7,6 +7,7 @@
 *.svg text eol=lf
 *.yml text eol=lf
 *.ps1 text eol=lf
+LICENSE text eol=lf
 *.png binary
 *.ico binary
 *.rgba binary

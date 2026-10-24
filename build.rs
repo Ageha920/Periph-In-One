@@ -1,6 +1,12 @@
 fn main() {
     println!("cargo:rerun-if-changed=ui/app.slint");
-    println!("cargo:rerun-if-changed=assets");
+    // README screenshots do not affect the embedded application resources.
+    for entry in std::fs::read_dir("assets").expect("assets directory is missing") {
+        let path = entry.expect("cannot read asset entry").path();
+        if path.is_file() {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         winresource::WindowsResource::new()
             .set_icon("assets/app.ico")
