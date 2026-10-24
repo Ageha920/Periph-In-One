@@ -2,4 +2,6 @@
 /dist/
 /config/
 *.pdb
+__pycache__/
+*.pyc
 
