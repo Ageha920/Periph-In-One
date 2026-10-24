@@ -84,7 +84,7 @@ cargo test --locked --all-targets
 
 生成 `dist/periph-in-one-0.1.8-windows-x64.zip`，包含程序、文档、图片、校验和与依赖许可，不包含本机配置。默认从 `target/release/` 取程序，可通过 `-Executable` 指定其他构建路径；已有同名 ZIP 时会拒绝覆盖。
 
-GitHub Actions 使用 Windows MSVC 执行格式、测试、Clippy、Release 构建和打包。Windows 10、多屏和不同 DPI 场景仍需要真机验证。
+GitHub Actions 在分支 push / PR 时执行格式、Windows MSVC 测试、Clippy、Release 构建和打包，产物保留 14 天。推送与 Cargo 版本一致的 `v*` 标签会复用完整检查，生成附带 ZIP 和 SHA256 的 Release 草稿，真机验收后手动公开。详见 [CI / CD 流程](.github/CICD.md)。Windows 10、多屏和不同 DPI 场景仍需要真机验证。
 
 <details>
 <summary>命令行诊断</summary>

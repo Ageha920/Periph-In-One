@@ -15,7 +15,7 @@ cargo clippy --locked --all-targets -- -D warnings
 .\scripts\package.ps1
 ```
 
-打包前应完成 Release 构建；脚本拒绝覆盖同版本 ZIP。CI 在 Windows MSVC 上执行同一组检查。Linux / macOS 不能验证 Windows 界面或硬件访问，核心逻辑可运行 `cargo test --locked --lib --test core`。
+打包前应完成 Release 构建；脚本拒绝覆盖同版本 ZIP。CI 在 Windows MSVC 上执行同一组检查；版本标签触发完整检查和 Release 草稿，操作步骤见 [CI / CD](.github/CICD.md)。Linux / macOS 不能验证 Windows 界面或硬件访问，核心逻辑可运行 `cargo test --locked --lib --test core`。
 
 ## 代码放在哪里
 

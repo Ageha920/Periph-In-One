@@ -1,0 +1,41 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Validate and package
+    uses: ./.github/workflows/ci.yml
+
+  draft:
+    name: Create release draft
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: periph-in-one-windows-x64
+          path: dist
+      - name: Verify distribution checksum
+        working-directory: dist
+        run: sha256sum --check SHA256SUMS.txt
+      - name: Create draft with verified assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" dist/*.zip dist/SHA256SUMS.txt \
+            --verify-tag --draft --generate-notes --title "$RELEASE_TAG"

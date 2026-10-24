@@ -1,23 +1,88 @@
-name: Windows build
+name: CI
+
 on:
   push:
+    branches: ['**']
   pull_request:
+  workflow_dispatch:
+  workflow_call:
+
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+
 jobs:
-  check:
-    runs-on: windows-latest
+  format:
+    name: Rust format
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: rustfmt
       - run: cargo fmt --all -- --check
-      - run: cargo test --locked --all-targets
-      - run: cargo clippy --locked --all-targets -- -D warnings
-      - run: ./scripts/build-windows.ps1
-      - run: ./scripts/package.ps1
+
+  windows:
+    name: Windows x64
+    needs: format
+    runs-on: windows-2022
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable-x86_64-pc-windows-msvc
+          components: clippy
+      - name: Validate release tag
+        if: github.ref_type == 'tag'
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $json = cargo metadata --locked --no-deps --format-version 1
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot read package version' }
+          $package = ($json | ConvertFrom-Json).packages | Where-Object name -eq 'periph-in-one'
+          if ($env:RELEASE_TAG -cne "v$($package.version)") {
+            throw "Tag $env:RELEASE_TAG must match Cargo.toml version v$($package.version)"
+          }
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-msvc
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Test all targets
+        run: cargo test --locked --all-targets
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Build release
+        run: ./scripts/build-windows.ps1
+      - name: Package portable ZIP
+        run: ./scripts/package.ps1
+      - name: Hash distribution
+        run: |
+          $archives = @(Get-ChildItem -Path dist/*.zip -File)
+          if ($archives.Count -ne 1) { throw 'Expected exactly one portable ZIP' }
+          $archive = $archives[0]
+          $hash = (Get-FileHash -LiteralPath $archive.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $($archive.Name)" | Set-Content -Encoding ascii dist/SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
           name: periph-in-one-windows-x64
-          path: dist/*.zip
+          path: |
+            dist/*.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
