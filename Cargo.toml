@@ -1,6 +1,6 @@
 [package]
 name = "periph-in-one"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "A portable Windows peripheral battery monitor"
 build = "build.rs"
@@ -12,7 +12,7 @@ tempfile = "3"
 
 [target.'cfg(windows)'.dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-slint = { version = "=1.17.0", default-features = false, features = ["std", "backend-winit", "renderer-software", "compat-1-2", "raw-window-handle-06"] }
+slint = { version = "=1.17.0", default-features = false, features = ["std", "backend-winit", "renderer-software", "compat-1-2", "raw-window-handle-06", "unstable-winit-030"] }
 hidapi = { version = "2.6", default-features = false, features = ["windows-native"] }
 tray-icon = { version = "0.23", default-features = false }
 raw-window-handle = "0.6"

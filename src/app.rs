@@ -25,6 +25,7 @@ pub enum Action {
     ReadingStarted,
     Readings(Result<Vec<Reading>, String>),
     Show,
+    Expand,
     Hide,
     SaveSize,
     Edit(String),
@@ -61,6 +62,7 @@ struct App {
     worker: Sender<WorkerCommand>,
     busy: bool,
     rebind_ids: Vec<String>,
+    presenter: platform::Presenter,
 }
 
 fn now() -> u64 {
@@ -125,10 +127,8 @@ impl App {
         if transient {
             let weak = self.ui.as_weak();
             slint::Timer::single_shot(Duration::from_secs(3), move || {
-                if let Some(ui) = weak.upgrade() {
-                    if ui.get_notice() == message {
-                        ui.set_notice("".into());
-                    }
+                if let Some(ui) = weak.upgrade().filter(|ui| ui.get_notice() == message) {
+                    ui.set_notice("".into());
                 }
             });
         }
@@ -150,6 +150,9 @@ impl App {
     }
 
     fn save_size(&mut self) {
+        if self.ui.get_mini_mode() || !self.ui.window().is_visible() {
+            return;
+        }
         let size = self
             .ui
             .window()
@@ -256,7 +259,11 @@ impl App {
     fn handle(&mut self, action: Action) {
         match action {
             Action::InitialShow => {
-                if let Err(error) = platform::initial_show(&self.ui) {
+                if let Err(error) = self.presenter.show(
+                    &self.ui,
+                    slint::LogicalSize::new(self.config.width, self.config.height),
+                    None,
+                ) {
                     platform::error_dialog(&error);
                     let _ = slint::quit_event_loop();
                 }
@@ -299,8 +306,27 @@ impl App {
                 self.update();
             }
             Action::Show => {
+                self.save_size();
+                self.ui.set_mini_mode(true);
+                self.ui.set_settings_open(false);
+                self.ui.set_editing(false);
+                let size = slint::LogicalSize::new(280.0, self.ui.get_mini_height());
+                if let Err(error) =
+                    self.presenter
+                        .show(&self.ui, size, Some(platform::tray_anchor(&self.tray)))
+                {
+                    self.notice(error);
+                }
+            }
+            Action::Expand => {
+                let anchor = platform::window_rect(self.ui.window());
+                self.ui.set_mini_mode(false);
                 self.ui.set_autostart(platform::autostart_enabled());
-                if let Err(error) = platform::near_tray(&self.ui, self.tray.rect()) {
+                if let Err(error) = self.presenter.show(
+                    &self.ui,
+                    slint::LogicalSize::new(self.config.width, self.config.height),
+                    Some(anchor),
+                ) {
                     self.notice(error);
                 }
             }
@@ -308,7 +334,7 @@ impl App {
                 self.save_size();
                 self.ui.set_settings_open(false);
                 self.ui.set_editing(false);
-                let _ = self.ui.hide();
+                let _ = self.presenter.hide(&self.ui);
             }
             Action::SaveSize => self.save_size(),
             Action::Edit(id) => {
@@ -467,13 +493,12 @@ fn tray_icon() -> Result<TrayIcon, String> {
 }
 
 pub fn run() -> Result<(), String> {
-    // Slint 1.17 supports recreating the native surface when a window is
-    // hidden. Windows can discard a hidden softbuffer without resetting its
-    // buffer age, so reusing it paints only changed controls on restore.
-    // Set the backend option before selecting it or starting worker threads.
+    // Windows may discard a hidden software surface without resetting its age.
+    // Configure Slint before any threads start; each show gets a fresh surface.
     unsafe {
         std::env::set_var("SLINT_DESTROY_WINDOW_ON_HIDE", "1");
     }
+
     let arguments: Vec<_> = std::env::args().skip(1).collect();
     if arguments.iter().any(|a| a == "--once") {
         let readings = devices::scan()?;
@@ -528,14 +553,16 @@ pub fn run() -> Result<(), String> {
         worker: sender.clone(),
         busy: true,
         rebind_ids: vec![],
+        presenter: platform::Presenter::default(),
     }));
     APP.with(|slot| *slot.borrow_mut() = Some(app.clone()));
     ui.on_refresh(|| post(Action::Refresh));
     ui.on_hide_window(|| post(Action::Hide));
+    ui.on_expand(|| post(Action::Expand));
     let weak = ui.as_weak();
     ui.on_drag_window(move || {
         if let Some(ui) = weak.upgrade() {
-            platform::drag(&ui);
+            platform::drag(ui.window());
         }
     });
     ui.on_edit_device(|id| post(Action::Edit(id.into())));

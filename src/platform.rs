@@ -3,7 +3,7 @@ use crate::{
     app::{Action, post},
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use slint::ComponentHandle;
+use slint::{ComponentHandle, winit_030::WinitWindowAccessor};
 use std::{
     path::PathBuf,
     ptr::{null, null_mut},
@@ -27,10 +27,6 @@ use windows_sys::Win32::{
 
 pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
-}
-
-thread_local! {
-    static ATTACHED: std::cell::Cell<HWND> = const { std::cell::Cell::new(null_mut()) };
 }
 
 pub fn error_dialog(message: &str) {
@@ -137,26 +133,22 @@ pub fn single_instance(autostart: bool) -> Result<Option<SingleInstance>, String
     }
 }
 
-pub fn hwnd(ui: &AppWindow) -> Option<HWND> {
-    let provider = ui.window().window_handle();
+pub fn hwnd(window: &slint::Window) -> Option<HWND> {
+    let provider = window.window_handle();
     match provider.window_handle().ok()?.as_raw() {
         RawWindowHandle::Win32(handle) => Some(handle.hwnd.get() as HWND),
         _ => None,
     }
 }
 
-pub fn attach(ui: &AppWindow) -> Result<(), String> {
-    let handle = hwnd(ui).ok_or("窗口句柄尚未创建")?;
+fn attach(window: &slint::Window, mini: bool) -> Result<(), String> {
+    let handle = hwnd(window).ok_or("窗口句柄尚未创建")?;
     unsafe {
-        // GetWindowSubclass is not exported by Windows' default comctl32 v5.
-        // Track our own attachment without taking a dependency on that export.
-        if ATTACHED.with(|attached| attached.get() == handle) {
-            return Ok(());
-        }
-        if SetWindowSubclass(handle, Some(window_proc), 0x4249, 0) == 0 {
+        // SetWindowSubclass with the same id replaces the previous entry, so
+        // re-attaching after every hide/show cycle stays idempotent.
+        if SetWindowSubclass(handle, Some(window_proc), 0x4249, mini as usize) == 0 {
             return Err("无法安装窗口事件处理".into());
         }
-        ATTACHED.with(|attached| attached.set(handle));
         let style = GetWindowLongPtrW(handle, GWL_STYLE) as u32;
         SetWindowLongPtrW(
             handle,
@@ -189,14 +181,15 @@ unsafe extern "system" fn window_proc(
     wp: WPARAM,
     lp: LPARAM,
     _: usize,
-    _: usize,
+    mode: usize,
 ) -> LRESULT {
+    let mini = mode != 0;
     // The FFI boundary never borrows application state or panics. Work is
     // queued into Slint, avoiding reentrant RefCell borrows during window calls.
     unsafe {
         match msg {
-            WM_NCDESTROY => ATTACHED.with(|attached| attached.set(null_mut())),
             WM_NCCALCSIZE if wp != 0 => return 0,
+            WM_NCHITTEST if mini => return HTCLIENT as LRESULT,
             WM_NCHITTEST => {
                 let mut rect: RECT = std::mem::zeroed();
                 if GetWindowRect(hwnd, &mut rect) != 0 {
@@ -221,7 +214,7 @@ unsafe extern "system" fn window_proc(
                     return hit as LRESULT;
                 }
             }
-            WM_EXITSIZEMOVE => post(Action::SaveSize),
+            WM_EXITSIZEMOVE if !mini => post(Action::SaveSize),
             WM_CLOSE => {
                 post(Action::Hide);
                 return 0;
@@ -232,8 +225,8 @@ unsafe extern "system" fn window_proc(
     }
 }
 
-pub fn drag(ui: &AppWindow) {
-    if let Some(handle) = hwnd(ui) {
+pub fn drag(window: &slint::Window) {
+    if let Some(handle) = hwnd(window) {
         unsafe {
             ReleaseCapture();
             SendMessageW(handle, WM_NCLBUTTONDOWN, HTCAPTION as usize, 0);
@@ -241,7 +234,7 @@ pub fn drag(ui: &AppWindow) {
     }
 }
 
-pub fn center(ui: &AppWindow) {
+pub fn center(window: &slint::Window) {
     unsafe {
         let monitor = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
         let mut info = MONITORINFO {
@@ -251,62 +244,136 @@ pub fn center(ui: &AppWindow) {
         if GetMonitorInfoW(monitor, &mut info) == 0 {
             return;
         }
-        let mut size = ui.window().size();
+        let mut size = window.size();
         let work = info.rcWork;
         size.width = size.width.min((work.right - work.left - 16).max(1) as u32);
         size.height = size.height.min((work.bottom - work.top - 16).max(1) as u32);
-        ui.window().set_size(size);
-        ui.window().set_position(slint::PhysicalPosition::new(
+        window.set_size(size);
+        window.set_position(slint::PhysicalPosition::new(
             work.left + (work.right - work.left - size.width as i32) / 2,
             work.top + (work.bottom - work.top - size.height as i32) / 2,
         ));
     }
 }
 
-pub fn initial_show(ui: &AppWindow) -> Result<(), String> {
-    ui.show().map_err(|e| e.to_string())?;
-    attach(ui)?;
-    center(ui);
-    Ok(())
+fn cursor_rect() -> RECT {
+    let mut point = POINT::default();
+    unsafe {
+        GetCursorPos(&mut point);
+    }
+    RECT {
+        left: point.x,
+        top: point.y,
+        right: point.x + 1,
+        bottom: point.y + 1,
+    }
 }
 
-pub fn near_tray(ui: &AppWindow, anchor: Option<tray_icon::Rect>) -> Result<(), String> {
-    // Recreate the surface even if the panel was merely occluded rather than
-    // explicitly closed. Keep the Slint model/editor state, not native pixels.
-    ui.window().set_minimized(false);
-    ui.hide().map_err(|e| e.to_string())?;
-    ui.show().map_err(|e| e.to_string())?;
-    attach(ui)?;
-    unsafe {
-        let mut cursor = POINT::default();
-        GetCursorPos(&mut cursor);
-        let anchor = anchor
-            .map(|r| RECT {
-                left: r.position.x as i32,
-                top: r.position.y as i32,
-                right: r.position.x as i32 + r.size.width as i32,
-                bottom: r.position.y as i32 + r.size.height as i32,
+/// Screen rectangle of the tray icon, falling back to the cursor position
+/// before the icon has reported its rect.
+pub fn tray_anchor(tray: &tray_icon::TrayIcon) -> RECT {
+    tray.rect()
+        .map(|r| RECT {
+            left: r.position.x as i32,
+            top: r.position.y as i32,
+            right: r.position.x as i32 + r.size.width as i32,
+            bottom: r.position.y as i32 + r.size.height as i32,
+        })
+        .unwrap_or_else(cursor_rect)
+}
+
+pub fn window_rect(window: &slint::Window) -> RECT {
+    let Some(handle) = hwnd(window) else {
+        return cursor_rect();
+    };
+    let mut rect = RECT::default();
+    if unsafe { GetWindowRect(handle, &mut rect) } == 0 {
+        cursor_rect()
+    } else {
+        rect
+    }
+}
+
+/// A single pending presentation, cancelled by a newer request or Hide.
+/// Slint's window future yields to native creation instead of guessing a delay.
+#[derive(Default)]
+pub struct Presenter {
+    pending: Option<slint::JoinHandle<()>>,
+}
+
+impl Presenter {
+    pub fn hide(&mut self, ui: &AppWindow) -> Result<(), String> {
+        if let Some(pending) = self.pending.take() {
+            pending.abort();
+        }
+        ui.hide().map_err(|e| e.to_string())
+    }
+
+    pub fn show(
+        &mut self,
+        ui: &AppWindow,
+        size: slint::LogicalSize,
+        anchor: Option<RECT>,
+    ) -> Result<(), String> {
+        // Release the software surface on every presentation, including an
+        // already visible panel being collapsed by a duplicate launch.
+        self.hide(ui)?;
+        ui.window().set_minimized(false);
+        ui.window().set_size(size);
+        ui.show().map_err(|e| e.to_string())?;
+        let weak = ui.as_weak();
+        self.pending = Some(
+            slint::spawn_local(async move {
+                let Some(ui) = weak.upgrade() else { return };
+                let result = async {
+                    // Do not retain the Arc: it would keep a destroyed HWND alive.
+                    drop(
+                        ui.window()
+                            .winit_window()
+                            .await
+                            .map_err(|e| e.to_string())?,
+                    );
+                    attach(ui.window(), ui.get_mini_mode())?;
+                    // Native creation may select a different DPI than the old window.
+                    ui.window().set_size(size);
+                    if let Some(anchor) = anchor {
+                        near_anchor(ui.window(), anchor);
+                    } else {
+                        center(ui.window());
+                    }
+                    ui.window().request_redraw();
+                    Ok::<(), String>(())
+                }
+                .await;
+                if result.is_err() {
+                    ui.set_notice("无法显示面板，请从托盘退出后重试".into());
+                }
             })
-            .unwrap_or(RECT {
-                left: cursor.x,
-                top: cursor.y,
-                right: cursor.x + 1,
-                bottom: cursor.y + 1,
-            });
+            .map_err(|e| e.to_string())?,
+        );
+        Ok(())
+    }
+}
+
+/// Position within the tray icon's monitor, handling taskbars on any edge.
+fn near_anchor(window: &slint::Window, anchor: RECT) {
+    unsafe {
         let monitor = MonitorFromRect(&anchor, MONITOR_DEFAULTTONEAREST);
         let mut info = MONITORINFO {
             cbSize: std::mem::size_of::<MONITORINFO>() as u32,
             ..std::mem::zeroed()
         };
         if GetMonitorInfoW(monitor, &mut info) == 0 {
-            return Ok(());
+            return;
         }
         let work = info.rcWork;
-        let size = ui.window().size();
-        let width = (size.width as i32).min(work.right - work.left - 16).max(1);
-        let height = (size.height as i32).min(work.bottom - work.top - 16).max(1);
-        ui.window()
-            .set_size(slint::PhysicalSize::new(width as u32, height as u32));
+        let width = (window.size().width as i32)
+            .min(work.right - work.left - 16)
+            .max(1);
+        let height = (window.size().height as i32)
+            .min(work.bottom - work.top - 16)
+            .max(1);
+        window.set_size(slint::PhysicalSize::new(width as u32, height as u32));
         let mut x = anchor.right - width;
         let mut y = anchor.top - height - 8;
         if anchor.bottom <= work.top {
@@ -323,16 +390,11 @@ pub fn near_tray(ui: &AppWindow, anchor: Option<tray_icon::Rect>) -> Result<(), 
         }
         x = x.clamp(work.left + 8, (work.right - width - 8).max(work.left + 8));
         y = y.clamp(work.top + 8, (work.bottom - height - 8).max(work.top + 8));
-        ui.window().set_position(slint::PhysicalPosition::new(x, y));
-        if let Some(handle) = hwnd(ui) {
-            if IsIconic(handle) != 0 {
-                ShowWindow(handle, SW_RESTORE);
-            }
+        window.set_position(slint::PhysicalPosition::new(x, y));
+        if let Some(handle) = hwnd(window) {
             SetForegroundWindow(handle);
         }
     }
-    ui.window().request_redraw();
-    Ok(())
 }
 
 fn startup_path() -> Result<PathBuf, String> {
