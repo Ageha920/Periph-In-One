@@ -31,6 +31,7 @@ pub enum Action {
     Remark(String, String),
     Rebind(String, usize),
     Copy(String),
+    CopyName(String),
     Delete(String),
     Saved(u64, Result<(), String>),
     Autostart(bool),
@@ -121,6 +122,7 @@ impl App {
             "备注已保存"
                 | "备注已重新绑定"
                 | "接收器序列号已复制"
+                | "硬件名称已复制"
                 | "离线记录已删除"
                 | "已启用开机自启"
                 | "已关闭开机自启"
@@ -191,7 +193,6 @@ impl App {
                     } else {
                         format!("接收器 SN：{}", saved.serial).into()
                     },
-                    has_serial: !saved.serial.is_empty(),
                     usb_id: format!("{:04X}:{:04X}", saved.vid, saved.pid).into(),
                     kind: saved.kind.clone().into(),
                     percentage: saved
@@ -358,6 +359,10 @@ impl App {
                     self.ui.set_editing_name(
                         format!("硬件名称：{}", device.saved.hardware_name).into(),
                     );
+                    self.ui
+                        .set_editing_has_name(!device.saved.hardware_name.is_empty());
+                    self.ui
+                        .set_editing_has_serial(!device.saved.serial.is_empty());
                     self.ui.set_editing_alias(device.saved.alias.clone().into());
                     self.ui
                         .set_editing_serial(if device.saved.serial.is_empty() {
@@ -424,6 +429,18 @@ impl App {
                     }
                     match platform::copy_text(&device.saved.serial) {
                         Ok(()) => self.notice("接收器序列号已复制"),
+                        Err(error) => self.notice(error),
+                    }
+                }
+            }
+            Action::CopyName(id) => {
+                if let Some(device) = self.devices.iter().find(|d| d.saved.id == id) {
+                    if device.saved.hardware_name.is_empty() {
+                        self.notice("设备未提供硬件名称");
+                        return;
+                    }
+                    match platform::copy_text(&device.saved.hardware_name) {
+                        Ok(()) => self.notice("硬件名称已复制"),
                         Err(error) => self.notice(error),
                     }
                 }
@@ -624,12 +641,6 @@ pub fn run() -> Result<(), String> {
     ui.on_refresh(|| post(Action::Refresh));
     ui.on_hide_window(|| post(Action::Hide));
     ui.on_expand(|| post(Action::Expand));
-    let weak = ui.as_weak();
-    ui.on_drag_window(move || {
-        if let Some(ui) = weak.upgrade() {
-            platform::drag(ui.window());
-        }
-    });
     ui.on_edit_device(|id| post(Action::Edit(id.into())));
     ui.on_save_remark(|id, alias| post(Action::Remark(id.into(), alias.into())));
     ui.on_rebind_remark(|id, index| {
@@ -638,6 +649,7 @@ pub fn run() -> Result<(), String> {
         }
     });
     ui.on_copy_serial(|id| post(Action::Copy(id.into())));
+    ui.on_copy_name(|id| post(Action::CopyName(id.into())));
     ui.on_delete_device(|id| post(Action::Delete(id.into())));
     ui.on_toggle_autostart(|enabled| post(Action::Autostart(enabled)));
     ui.window().on_close_requested(|| {

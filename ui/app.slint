@@ -5,7 +5,6 @@ export struct DeviceRow {
     title: string,
     hardware-name: string,
     serial: string,
-    has-serial: bool,
     usb-id: string,
     kind: string,
     percentage: string,
@@ -37,7 +36,6 @@ component DeviceCard inherits Rectangle {
     in property <DeviceRow> data;
     private property <bool> show-hardware-name: root.data.alias != "" && root.data.alias != root.data.hardware-name;
     callback edit();
-    callback copy-serial();
     callback delete-device();
     height: 208px;
     border-radius: 18px;
@@ -72,17 +70,7 @@ component DeviceCard inherits Rectangle {
         Rectangle { x: 0px; y: 0px; width: parent.width * root.data.level; height: parent.height; border-radius: 3px; background: !root.data.fresh ? #bac8bf : root.data.level < 0.3 ? #cd6854 : root.data.level < 0.6 ? #c19a43 : #00896c; }
     }
     if root.show-hardware-name: Text { x: 18px; y: 140px; width: parent.width - 36px; height: 17px; text: root.data.hardware-name; color: #62776b; font-size: 11px; overflow: elide; }
-    HorizontalLayout {
-        x: 18px; y: root.show-hardware-name ? 159px : 140px;
-        width: parent.width - 36px; height: 24px;
-        spacing: 4px; alignment: start;
-        Text { text: root.data.serial; color: #7b8c82; font-size: 10px; overflow: elide; vertical-alignment: center; horizontal-stretch: 0; max-width: parent.width - (root.data.has-serial ? 28px : 0px); }
-        if root.data.has-serial: IconButton {
-            width: 24px; height: 24px;
-            icon: @image-url("../assets/copy.svg"); label: "复制接收器序列号";
-            clicked => { root.copy-serial(); }
-        }
-    }
+    Text { x: 18px; y: root.show-hardware-name ? 162px : 143px; width: parent.width - 36px; height: 17px; text: root.data.serial; color: #7b8c82; font-size: 10px; overflow: elide; }
     Text { x: 18px; y: root.show-hardware-name ? 185px : 171px; width: parent.width - 36px; height: 14px; text: root.data.updated; color: #89988f; font-size: 10px; overflow: elide; }
 }
 
@@ -93,14 +81,9 @@ component MiniPanel inherits Rectangle {
     in property <bool> busy;
     callback expand();
     callback hide-window();
-    callback drag-window();
     callback refresh();
 
     Rectangle { border-width: 1px; border-color: #dce5df; border-radius: 12px; background: transparent; }
-    TouchArea {
-        height: 42px;
-        pointer-event(event) => { if event.kind == PointerEventKind.down && event.button == PointerEventButton.left { root.drag-window(); } }
-    }
     Image { x: 12px; y: 12px; width: 18px; height: 18px; source: @image-url("../assets/brand.svg"); }
     Text { x: 38px; y: 12px; width: parent.width - 122px; height: 18px; text: "Periph In One"; font-size: 12px; font-weight: 600; color: #19392d; }
     IconButton { x: parent.width - 78px; y: 5px; icon: @image-url("../assets/expand.svg"); label: "展开完整面板"; clicked => { root.expand(); } }
@@ -184,17 +167,19 @@ export component AppWindow inherits Window {
     in-out property <string> editing-name;
     in-out property <string> editing-alias;
     in-out property <string> editing-serial;
+    in property <bool> editing-has-name;
+    in property <bool> editing-has-serial;
     in-out property <string> editing-identity;
     in property <[string]> rebind-options;
     private property <int> columns: root.width > root.height ? max(1, floor((root.width - 30px) / 280px)) : 1;
     callback refresh();
     callback hide-window();
-    callback drag-window();
     callback expand();
     callback edit-device(string);
     callback save-remark(string, string);
     callback rebind-remark(string, int);
     callback copy-serial(string);
+    callback copy-name(string);
     callback delete-device(string);
     callback toggle-autostart(bool);
 
@@ -207,7 +192,6 @@ export component AppWindow inherits Window {
         busy: root.busy;
         expand => { root.expand(); }
         hide-window => { root.hide-window(); }
-        drag-window => { root.drag-window(); }
         refresh => { root.refresh(); }
     }
 
@@ -215,10 +199,6 @@ export component AppWindow inherits Window {
         width: 100%;
         height: 100%;
         Rectangle { border-width: 1px; border-color: #dce5df; border-radius: 16px; background: transparent; }
-        TouchArea {
-            height: 84px;
-            pointer-event(event) => { if event.kind == PointerEventKind.down && event.button == PointerEventButton.left { root.drag-window(); } }
-        }
         Image { x: 22px; y: 25px; width: 38px; height: 38px; source: @image-url("../assets/brand.svg"); }
         Text { x: 72px; y: 21px; width: parent.width - 174px; height: 31px; text: "Periph In One"; font-size: 20px; font-weight: 700; color: #19392d; }
         Text { x: 73px; y: 54px; width: parent.width - 96px; height: 18px; text: root.summary; font-size: 11px; color: #6c8274; overflow: elide; }
@@ -235,7 +215,6 @@ export component AppWindow inherits Window {
                 y: floor(index / root.columns) * 220px;
                 data: data;
                 edit => { root.edit-device(data.id); }
-                copy-serial => { root.copy-serial(data.id); }
                 delete-device => {
                     root.deleting-id = data.id;
                     root.deleting-name = data.title;
@@ -287,8 +266,16 @@ export component AppWindow inherits Window {
                 VerticalLayout {
                     padding: 22px; spacing: 12px;
                     HorizontalLayout { Text { text: "设备备注"; font-size: 20px; font-weight: 600; color: #19392d; } IconButton { icon: @image-url("../assets/close.svg"); label: "取消编辑"; clicked => { root.editing = false; } } }
-                    Text { text: root.editing-name; color: #62796a; font-size: 12px; wrap: word-wrap; }
-                    Text { text: root.editing-serial; color: #71877a; font-size: 11px; wrap: char-wrap; }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text { text: root.editing-name; color: #62796a; font-size: 12px; wrap: word-wrap; horizontal-stretch: 1; vertical-alignment: center; }
+                        if root.editing-has-name: IconButton { icon: @image-url("../assets/copy.svg"); label: "复制硬件名称"; clicked => { root.copy-name(root.editing-id); } }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text { text: root.editing-serial; color: #71877a; font-size: 11px; wrap: char-wrap; horizontal-stretch: 1; vertical-alignment: center; }
+                        if root.editing-has-serial: IconButton { icon: @image-url("../assets/copy.svg"); label: "复制接收器序列号"; clicked => { root.copy-serial(root.editing-id); } }
+                    }
                     if root.editing-identity != "": Text { text: root.editing-identity; color: #a36e3d; font-size: 10px; wrap: word-wrap; }
                     LineEdit { text <=> root.editing-alias; placeholder-text: "例如：办公鼠标"; accepted => { root.save-remark(root.editing-id, root.editing-alias); } }
                     Button { text: "保存"; primary: true; clicked => { root.save-remark(root.editing-id, root.editing-alias); } }

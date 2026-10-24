@@ -188,29 +188,19 @@ unsafe extern "system" fn window_proc(
     unsafe {
         match msg {
             WM_NCCALCSIZE if wp != 0 => return 0,
-            WM_NCHITTEST if mini => return HTCLIENT as LRESULT,
             WM_NCHITTEST => {
                 let mut rect: RECT = std::mem::zeroed();
                 if GetWindowRect(hwnd, &mut rect) != 0 {
                     let x = (lp as u16 as i16) as i32;
                     let y = ((lp >> 16) as u16 as i16) as i32;
-                    let edge = (GetDpiForWindow(hwnd).max(96) as i32 * 7 / 96).max(6);
-                    let left = x < rect.left + edge;
-                    let right = x >= rect.right - edge;
-                    let top = y < rect.top + edge;
-                    let bottom = y >= rect.bottom - edge;
-                    let hit = match (left, right, top, bottom) {
-                        (true, _, true, _) => HTTOPLEFT,
-                        (_, true, true, _) => HTTOPRIGHT,
-                        (true, _, _, true) => HTBOTTOMLEFT,
-                        (_, true, _, true) => HTBOTTOMRIGHT,
-                        (true, _, _, _) => HTLEFT,
-                        (_, true, _, _) => HTRIGHT,
-                        (_, _, true, _) => HTTOP,
-                        (_, _, _, true) => HTBOTTOM,
-                        _ => HTCLIENT,
-                    };
-                    return hit as LRESULT;
+                    return panel_hit_test(
+                        x - rect.left,
+                        y - rect.top,
+                        rect.right - rect.left,
+                        rect.bottom - rect.top,
+                        GetDpiForWindow(hwnd),
+                        mini,
+                    ) as LRESULT;
                 }
             }
             WM_EXITSIZEMOVE if !mini => post(Action::SaveSize),
@@ -224,13 +214,47 @@ unsafe extern "system" fn window_proc(
     }
 }
 
-pub fn drag(window: &slint::Window) {
-    // Winit queues the native drag and tracks capture/release. Entering a
-    // synchronous Windows move loop from a Slint pointer callback can swallow
-    // input while the callback is still on the stack.
-    window.with_winit_window(|native| {
-        let _ = native.drag_window();
-    });
+fn panel_hit_test(x: i32, y: i32, width: i32, height: i32, dpi: u32, mini: bool) -> u32 {
+    let scale = dpi.max(96) as f32 / 96.0;
+    let (x, y, width, height) = (
+        x as f32 / scale,
+        y as f32 / scale,
+        width as f32 / scale,
+        height as f32 / scale,
+    );
+    if !mini {
+        let hit = match (x < 7.0, x >= width - 7.0, y < 7.0, y >= height - 7.0) {
+            (true, _, true, _) => HTTOPLEFT,
+            (_, true, true, _) => HTTOPRIGHT,
+            (true, _, _, true) => HTBOTTOMLEFT,
+            (_, true, _, true) => HTBOTTOMRIGHT,
+            (true, _, _, _) => HTLEFT,
+            (_, true, _, _) => HTRIGHT,
+            (_, _, true, _) => HTTOP,
+            (_, _, _, true) => HTBOTTOM,
+            _ => HTCLIENT,
+        };
+        if hit != HTCLIENT {
+            return hit;
+        }
+    }
+    let (header, button_y, button_right_offsets) = if mini {
+        (42.0, 5.0, [78.0, 42.0])
+    } else {
+        (84.0, 28.0, [92.0, 52.0])
+    };
+    let over_button = y >= button_y
+        && y < button_y + 32.0
+        && button_right_offsets
+            .iter()
+            .any(|offset| x >= width - offset && x < width - offset + 32.0);
+    // Let Windows own capture and the move loop. This works over the logo,
+    // text and empty header alike, without a Slint pointer callback.
+    if y >= 0.0 && y < header && !over_button {
+        HTCAPTION
+    } else {
+        HTCLIENT
+    }
 }
 
 pub fn center(window: &slint::Window) {
@@ -547,6 +571,40 @@ pub fn copy_text(text: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_header_drag_preserves_buttons_content_and_resize_edges_at_each_dpi() {
+        for dpi in [96, 144, 192] {
+            let scale = dpi as f32 / 96.0;
+            let hit = |x: i32, y: i32, width: i32, height: i32, mini| {
+                panel_hit_test(
+                    (x as f32 * scale) as i32,
+                    (y as f32 * scale) as i32,
+                    (width as f32 * scale) as i32,
+                    (height as f32 * scale) as i32,
+                    dpi,
+                    mini,
+                )
+            };
+            for width in [360, 590, 1040] {
+                for (x, y) in [(40, 40), (150, 32), (width / 2, 72), (width - 20, 76)] {
+                    assert_eq!(hit(x, y, width, 640, false), HTCAPTION);
+                }
+                for x in [width - 76, width - 36] {
+                    assert_eq!(hit(x, 44, width, 640, false), HTCLIENT);
+                }
+                assert_eq!(hit(100, 120, width, 640, false), HTCLIENT);
+                assert_eq!(hit(1, 100, width, 640, false), HTLEFT);
+                assert_eq!(hit(100, 1, width, 640, false), HTTOP);
+                assert_eq!(hit(width - 1, 639, width, 640, false), HTBOTTOMRIGHT);
+            }
+            assert_eq!(hit(40, 21, 280, 176, true), HTCAPTION);
+            assert_eq!(hit(150, 21, 280, 176, true), HTCAPTION);
+            assert_eq!(hit(218, 21, 280, 176, true), HTCLIENT);
+            assert_eq!(hit(254, 21, 280, 176, true), HTCLIENT);
+            assert_eq!(hit(100, 60, 280, 176, true), HTCLIENT);
+        }
+    }
 
     #[test]
     fn creates_shortcut_with_silent_start_argument_in_a_temporary_folder() {
