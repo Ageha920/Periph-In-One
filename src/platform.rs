@@ -1,0 +1,462 @@
+use crate::{
+    AppWindow,
+    app::{Action, post},
+};
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use slint::ComponentHandle;
+use std::{
+    path::PathBuf,
+    ptr::{null, null_mut},
+};
+use windows::Win32::{
+    System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree, IPersistFile},
+    UI::Shell::{FOLDERID_Startup, IShellLinkW, KF_FLAG_DEFAULT, SHGetKnownFolderPath, ShellLink},
+};
+use windows::core::{Interface, PCWSTR};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
+use windows_sys::Win32::{
+    Foundation::*,
+    Graphics::{Dwm::*, Gdi::*},
+    System::{LibraryLoader::GetModuleHandleW, Registry::*, Threading::*},
+    UI::{
+        HiDpi::*,
+        Shell::{DefSubclassProc, GetWindowSubclass, SetWindowSubclass},
+        WindowsAndMessaging::*,
+    },
+};
+
+pub fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(Some(0)).collect()
+}
+
+pub fn error_dialog(message: &str) {
+    unsafe {
+        MessageBoxW(
+            null_mut(),
+            wide(message).as_ptr(),
+            wide("电量岛").as_ptr(),
+            MB_OK | MB_ICONERROR,
+        );
+    }
+}
+
+pub struct SingleInstance(HANDLE);
+impl Drop for SingleInstance {
+    fn drop(&mut self) {
+        unsafe {
+            CloseHandle(self.0);
+        }
+    }
+}
+
+pub fn show_message() -> u32 {
+    static MESSAGE: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *MESSAGE.get_or_init(|| unsafe {
+        RegisterWindowMessageW(wide("BatteryIsland.ShowPanel.v1").as_ptr())
+    })
+}
+
+/// Independent of the panel: startup can stay in the tray without ever
+/// creating a visible Slint window, while duplicate launches still wake it.
+pub struct IpcWindow(HWND);
+impl Drop for IpcWindow {
+    fn drop(&mut self) {
+        unsafe {
+            DestroyWindow(self.0);
+        }
+    }
+}
+
+pub fn ipc_window() -> Result<IpcWindow, String> {
+    unsafe {
+        let module = GetModuleHandleW(null());
+        let class = wide("BatteryIsland.Ipc.v1");
+        let definition = WNDCLASSW {
+            lpfnWndProc: Some(ipc_proc),
+            hInstance: module,
+            lpszClassName: class.as_ptr(),
+            ..std::mem::zeroed()
+        };
+        RegisterClassW(&definition);
+        let handle = CreateWindowExW(
+            WS_EX_TOOLWINDOW,
+            class.as_ptr(),
+            null(),
+            WS_OVERLAPPED,
+            0,
+            0,
+            0,
+            0,
+            null_mut(),
+            null_mut(),
+            module,
+            null(),
+        );
+        if handle.is_null() {
+            Err("无法创建单实例消息窗口".into())
+        } else {
+            Ok(IpcWindow(handle))
+        }
+    }
+}
+
+unsafe extern "system" fn ipc_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    if msg == show_message() {
+        post(Action::Show);
+        return 0;
+    }
+    match msg {
+        WM_DEVICECHANGE => post(Action::Refresh),
+        WM_POWERBROADCAST if wp == 18 || wp == 7 => post(Action::Refresh),
+        _ => {}
+    }
+    unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
+}
+
+pub fn single_instance(autostart: bool) -> Result<Option<SingleInstance>, String> {
+    unsafe {
+        let handle = CreateMutexW(null(), 0, wide("Local\\BatteryIsland.v1").as_ptr());
+        if handle.is_null() {
+            return Err("无法创建单实例锁".into());
+        }
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            CloseHandle(handle);
+            if !autostart {
+                AllowSetForegroundWindow(ASFW_ANY);
+                SendNotifyMessageW(HWND_BROADCAST, show_message(), 0, 0);
+            }
+            return Ok(None);
+        }
+        Ok(Some(SingleInstance(handle)))
+    }
+}
+
+pub fn hwnd(ui: &AppWindow) -> Option<HWND> {
+    let provider = ui.window().window_handle();
+    match provider.window_handle().ok()?.as_raw() {
+        RawWindowHandle::Win32(handle) => Some(handle.hwnd.get() as HWND),
+        _ => None,
+    }
+}
+
+pub fn attach(ui: &AppWindow) -> Result<(), String> {
+    let handle = hwnd(ui).ok_or("窗口句柄尚未创建")?;
+    unsafe {
+        let mut reference = 0;
+        if GetWindowSubclass(handle, Some(window_proc), 0x4249, &mut reference) != 0 {
+            return Ok(());
+        }
+        if SetWindowSubclass(handle, Some(window_proc), 0x4249, 0) == 0 {
+            return Err("无法安装窗口事件处理".into());
+        }
+        let style = GetWindowLongPtrW(handle, GWL_STYLE) as u32;
+        SetWindowLongPtrW(
+            handle,
+            GWL_STYLE,
+            (style | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX) as isize,
+        );
+        SetWindowPos(
+            handle,
+            null_mut(),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED | SWP_NOACTIVATE,
+        );
+        let corner = DWMWCP_ROUND;
+        DwmSetWindowAttribute(
+            handle,
+            DWMWA_WINDOW_CORNER_PREFERENCE as u32,
+            (&corner as *const DWM_WINDOW_CORNER_PREFERENCE).cast(),
+            std::mem::size_of_val(&corner) as u32,
+        );
+    }
+    Ok(())
+}
+
+unsafe extern "system" fn window_proc(
+    hwnd: HWND,
+    msg: u32,
+    wp: WPARAM,
+    lp: LPARAM,
+    _: usize,
+    _: usize,
+) -> LRESULT {
+    // The FFI boundary never borrows application state or panics. Work is
+    // queued into Slint, avoiding reentrant RefCell borrows during window calls.
+    unsafe {
+        match msg {
+            WM_NCCALCSIZE if wp != 0 => return 0,
+            WM_NCHITTEST => {
+                let mut rect: RECT = std::mem::zeroed();
+                if GetWindowRect(hwnd, &mut rect) != 0 {
+                    let x = (lp as u16 as i16) as i32;
+                    let y = ((lp >> 16) as u16 as i16) as i32;
+                    let edge = (GetDpiForWindow(hwnd).max(96) as i32 * 7 / 96).max(6);
+                    let left = x < rect.left + edge;
+                    let right = x >= rect.right - edge;
+                    let top = y < rect.top + edge;
+                    let bottom = y >= rect.bottom - edge;
+                    let hit = match (left, right, top, bottom) {
+                        (true, _, true, _) => HTTOPLEFT,
+                        (_, true, true, _) => HTTOPRIGHT,
+                        (true, _, _, true) => HTBOTTOMLEFT,
+                        (_, true, _, true) => HTBOTTOMRIGHT,
+                        (true, _, _, _) => HTLEFT,
+                        (_, true, _, _) => HTRIGHT,
+                        (_, _, true, _) => HTTOP,
+                        (_, _, _, true) => HTBOTTOM,
+                        _ => HTCLIENT,
+                    };
+                    return hit as LRESULT;
+                }
+            }
+            WM_EXITSIZEMOVE => post(Action::SaveSize),
+            WM_CLOSE => {
+                post(Action::Hide);
+                return 0;
+            }
+            _ => {}
+        }
+        DefSubclassProc(hwnd, msg, wp, lp)
+    }
+}
+
+pub fn drag(ui: &AppWindow) {
+    if let Some(handle) = hwnd(ui) {
+        unsafe {
+            ReleaseCapture();
+            SendMessageW(handle, WM_NCLBUTTONDOWN, HTCAPTION as usize, 0);
+        }
+    }
+}
+
+pub fn center(ui: &AppWindow) {
+    unsafe {
+        let monitor = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..std::mem::zeroed()
+        };
+        if GetMonitorInfoW(monitor, &mut info) == 0 {
+            return;
+        }
+        let mut size = ui.window().size();
+        let work = info.rcWork;
+        size.width = size.width.min((work.right - work.left - 16).max(1) as u32);
+        size.height = size.height.min((work.bottom - work.top - 16).max(1) as u32);
+        ui.window().set_size(size);
+        ui.window().set_position(slint::PhysicalPosition::new(
+            work.left + (work.right - work.left - size.width as i32) / 2,
+            work.top + (work.bottom - work.top - size.height as i32) / 2,
+        ));
+    }
+}
+
+pub fn initial_show(ui: &AppWindow) -> Result<(), String> {
+    ui.show().map_err(|e| e.to_string())?;
+    attach(ui)?;
+    center(ui);
+    Ok(())
+}
+
+pub fn near_tray(ui: &AppWindow, anchor: Option<tray_icon::Rect>) -> Result<(), String> {
+    ui.show().map_err(|e| e.to_string())?;
+    attach(ui)?;
+    unsafe {
+        let mut cursor = POINT::default();
+        GetCursorPos(&mut cursor);
+        let anchor = anchor
+            .map(|r| RECT {
+                left: r.position.x as i32,
+                top: r.position.y as i32,
+                right: r.position.x as i32 + r.size.width as i32,
+                bottom: r.position.y as i32 + r.size.height as i32,
+            })
+            .unwrap_or(RECT {
+                left: cursor.x,
+                top: cursor.y,
+                right: cursor.x + 1,
+                bottom: cursor.y + 1,
+            });
+        let monitor = MonitorFromRect(&anchor, MONITOR_DEFAULTTONEAREST);
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..std::mem::zeroed()
+        };
+        if GetMonitorInfoW(monitor, &mut info) == 0 {
+            return Ok(());
+        }
+        let work = info.rcWork;
+        let size = ui.window().size();
+        let width = (size.width as i32).min(work.right - work.left - 16).max(1);
+        let height = (size.height as i32).min(work.bottom - work.top - 16).max(1);
+        ui.window()
+            .set_size(slint::PhysicalSize::new(width as u32, height as u32));
+        let mut x = anchor.right - width;
+        let mut y = anchor.top - height - 8;
+        if anchor.bottom <= work.top {
+            y = work.top + 8;
+        }
+        if anchor.right <= work.left {
+            x = work.left + 8;
+        }
+        if anchor.left >= work.right {
+            x = work.right - width - 8;
+        }
+        if y < work.top + 8 {
+            y = anchor.bottom + 8;
+        }
+        x = x.clamp(work.left + 8, (work.right - width - 8).max(work.left + 8));
+        y = y.clamp(work.top + 8, (work.bottom - height - 8).max(work.top + 8));
+        ui.window().set_position(slint::PhysicalPosition::new(x, y));
+        if let Some(handle) = hwnd(ui) {
+            ShowWindow(handle, SW_RESTORE);
+            SetForegroundWindow(handle);
+        }
+    }
+    Ok(())
+}
+
+fn startup_path() -> Result<PathBuf, String> {
+    unsafe {
+        let path = SHGetKnownFolderPath(&FOLDERID_Startup, KF_FLAG_DEFAULT, None)
+            .map_err(|e| e.to_string())?;
+        let value = path.to_string().map_err(|e| e.to_string());
+        CoTaskMemFree(Some(path.0.cast()));
+        Ok(PathBuf::from(value?).join("电量岛.lnk"))
+    }
+}
+
+const APPROVED_PATH: &str =
+    "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\StartupFolder";
+
+pub fn autostart_enabled() -> bool {
+    let Ok(path) = startup_path() else {
+        return false;
+    };
+    if !path.exists() {
+        return false;
+    }
+    unsafe {
+        // Validate the actual shortcut as well as Task Manager's approval state.
+        let valid = (|| -> windows::core::Result<bool> {
+            let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
+            let file: IPersistFile = link.cast()?;
+            file.Load(
+                PCWSTR(wide(&path.to_string_lossy()).as_ptr()),
+                windows::Win32::System::Com::STGM_READ,
+            )?;
+            let mut target = [0u16; 32768];
+            link.GetPath(&mut target, null_mut(), 0)?;
+            let n = target.iter().position(|&c| c == 0).unwrap_or(target.len());
+            let actual = PathBuf::from(String::from_utf16_lossy(&target[..n]));
+            Ok(std::env::current_exe().is_ok_and(|exe| {
+                actual
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(&exe.to_string_lossy())
+            }))
+        })()
+        .unwrap_or(false);
+        if !valid {
+            return false;
+        }
+        let mut key = null_mut();
+        if RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            wide(APPROVED_PATH).as_ptr(),
+            0,
+            KEY_READ,
+            &mut key,
+        ) != ERROR_SUCCESS
+        {
+            return true;
+        }
+        let mut bytes = [0u8; 24];
+        let mut len = bytes.len() as u32;
+        let status = RegQueryValueExW(
+            key,
+            wide("电量岛.lnk").as_ptr(),
+            null(),
+            null_mut(),
+            bytes.as_mut_ptr(),
+            &mut len,
+        );
+        RegCloseKey(key);
+        status != ERROR_SUCCESS || len == 0 || !matches!(bytes[0], 3 | 7)
+    }
+}
+
+pub fn set_autostart(enabled: bool) -> Result<(), String> {
+    let path = startup_path()?;
+    if !enabled {
+        if path.exists() {
+            std::fs::remove_file(path).map_err(|e| e.to_string())?;
+        }
+        return Ok(());
+    }
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    unsafe {
+        let create = (|| -> windows::core::Result<()> {
+            let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
+            link.SetPath(PCWSTR(wide(&exe.to_string_lossy()).as_ptr()))?;
+            link.SetArguments(PCWSTR(wide("--autostart").as_ptr()))?;
+            link.SetWorkingDirectory(PCWSTR(
+                wide(&exe.parent().unwrap().to_string_lossy()).as_ptr(),
+            ))?;
+            link.SetDescription(PCWSTR(wide("电量岛 — 外设电量查看器").as_ptr()))?;
+            let file: IPersistFile = link.cast()?;
+            file.Save(PCWSTR(wide(&path.to_string_lossy()).as_ptr()), true)
+        })();
+        create.map_err(|e| e.to_string())?;
+        // Change only our own approval value after an explicit user toggle.
+        let mut key = null_mut();
+        if RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            wide(APPROVED_PATH).as_ptr(),
+            0,
+            KEY_SET_VALUE,
+            &mut key,
+        ) == ERROR_SUCCESS
+        {
+            let status = RegDeleteValueW(key, wide("电量岛.lnk").as_ptr());
+            RegCloseKey(key);
+            if status != ERROR_SUCCESS && status != ERROR_FILE_NOT_FOUND {
+                return Err("自启快捷方式已创建，但任务管理器的禁用状态未能清除".into());
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn copy_text(text: &str) -> Result<(), String> {
+    use windows_sys::Win32::System::{DataExchange::*, Memory::*};
+    let bytes = wide(text);
+    unsafe {
+        if OpenClipboard(null_mut()) == 0 {
+            return Err("剪贴板正忙，请重试".into());
+        }
+        let result = (|| {
+            let handle = GlobalAlloc(GMEM_MOVEABLE, bytes.len() * 2);
+            if handle.is_null() {
+                return Err("无法分配剪贴板内存".into());
+            }
+            let pointer = GlobalLock(handle);
+            if pointer.is_null() {
+                GlobalFree(handle);
+                return Err("无法访问剪贴板内存".into());
+            }
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), pointer.cast::<u16>(), bytes.len());
+            GlobalUnlock(handle);
+            EmptyClipboard();
+            if SetClipboardData(13, handle).is_null() {
+                GlobalFree(handle);
+                return Err("无法复制到剪贴板".into());
+            }
+            Ok(())
+        })();
+        CloseClipboard();
+        result
+    }
+}

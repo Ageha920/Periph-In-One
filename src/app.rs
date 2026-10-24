@@ -1,0 +1,558 @@
+use crate::{AppWindow, DeviceRow, platform};
+use battery_island::{
+    config::Config,
+    devices,
+    model::{self, Device, Reading},
+};
+use chrono::{DateTime, Local};
+use slint::{ComponentHandle, ModelRc, VecModel};
+use std::{
+    cell::RefCell,
+    path::PathBuf,
+    rc::Rc,
+    sync::mpsc::{self, RecvTimeoutError, Sender},
+    thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
+use tray_icon::{
+    Icon, MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent,
+    menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
+};
+
+pub enum Action {
+    InitialShow,
+    Refresh,
+    ReadingStarted,
+    Readings(Result<Vec<Reading>, String>),
+    Show,
+    Hide,
+    SaveSize,
+    Edit(String),
+    Remark(String, String),
+    Rebind(String, usize),
+    Copy(String),
+    Autostart(bool),
+    Quit,
+}
+
+enum WorkerCommand {
+    Refresh,
+    Stop,
+}
+
+thread_local! { static APP: RefCell<Option<Rc<RefCell<App>>>> = const { RefCell::new(None) }; }
+
+pub fn post(action: Action) {
+    let _ = slint::invoke_from_event_loop(move || {
+        let app = APP.with(|slot| slot.borrow().clone());
+        if let Some(app) = app {
+            app.borrow_mut().handle(action);
+        }
+    });
+}
+
+struct App {
+    ui: AppWindow,
+    tray: TrayIcon,
+    config: Config,
+    path: PathBuf,
+    config_error: Option<String>,
+    devices: Vec<Device>,
+    worker: Sender<WorkerCommand>,
+    busy: bool,
+    rebind_ids: Vec<String>,
+}
+
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn timestamp(time: u64) -> String {
+    let date: DateTime<Local> = (UNIX_EPOCH + Duration::from_secs(time)).into();
+    date.format("%m-%d %H:%M:%S").to_string()
+}
+
+fn fallback_name(device: &Device) -> &str {
+    if !device.saved.alias.is_empty() {
+        &device.saved.alias
+    } else if !device.saved.hardware_name.is_empty() {
+        &device.saved.hardware_name
+    } else if device.saved.kind == "mouse" {
+        "ATK 无线鼠标"
+    } else {
+        "DARKRIM 无线耳机"
+    }
+}
+
+fn identity_note(device: &Device) -> &'static str {
+    if device.saved.identity_conflict {
+        "检测到序列号冲突，备注仅跟随本机记录。可从离线记录手动恢复备注。"
+    } else if device.saved.serial.is_empty() {
+        "设备未提供序列号。换插口后若无法识别，可从离线记录手动恢复备注。"
+    } else {
+        "备注跟随接收器序列号；该标识不等同于外设本体铭牌 SN。"
+    }
+}
+
+impl App {
+    fn notice(&self, message: impl Into<slint::SharedString>) {
+        self.ui.set_notice(message.into());
+    }
+
+    fn persist(&mut self) -> bool {
+        if let Some(error) = &self.config_error {
+            self.notice(format!(
+                "配置未保存：{error}；请修复 config/settings.json 后重启"
+            ));
+            return false;
+        }
+        self.config.devices = self.devices.iter().map(|d| d.saved.clone()).collect();
+        match self.config.save(&self.path) {
+            Ok(()) => true,
+            Err(error) => {
+                self.notice(format!("配置保存失败：{error}"));
+                false
+            }
+        }
+    }
+
+    fn save_size(&mut self) {
+        let size = self
+            .ui
+            .window()
+            .size()
+            .to_logical(self.ui.window().scale_factor());
+        self.config.width = size.width;
+        self.config.height = size.height;
+        self.persist();
+    }
+
+    fn update(&self) {
+        let rows: Vec<DeviceRow> = self
+            .devices
+            .iter()
+            .map(|device| {
+                let saved = &device.saved;
+                DeviceRow {
+                    id: saved.id.clone().into(),
+                    title: fallback_name(device).into(),
+                    hardware_name: saved.hardware_name.clone().into(),
+                    serial: if saved.serial.is_empty() {
+                        "接收器序列号：未提供".into()
+                    } else {
+                        format!("接收器 SN：{}", saved.serial).into()
+                    },
+                    usb_id: format!("{:04X}:{:04X}", saved.vid, saved.pid).into(),
+                    kind: saved.kind.clone().into(),
+                    percentage: saved
+                        .battery
+                        .map(|b| format!("{b}%"))
+                        .unwrap_or("—".into())
+                        .into(),
+                    level: saved.battery.unwrap_or(0).min(100) as f32 / 100.0,
+                    fresh: device.fresh,
+                    present: device.present,
+                    status: if device.fresh {
+                        "已连接".into()
+                    } else if !device.present {
+                        "已离线".into()
+                    } else {
+                        "未响应".into()
+                    },
+                    updated: match saved.last_success {
+                        Some(time) => format!(
+                            "{} {}",
+                            if device.fresh {
+                                "更新于"
+                            } else {
+                                "上次读数"
+                            },
+                            timestamp(time)
+                        ),
+                        None => device.message.clone(),
+                    }
+                    .into(),
+                    alias: saved.alias.clone().into(),
+                    identity_note: identity_note(device).into(),
+                }
+            })
+            .collect();
+        self.ui.set_devices(ModelRc::new(VecModel::from(rows)));
+        let connected = self.devices.iter().filter(|d| d.fresh).count();
+        self.ui.set_summary(
+            format!(
+                "我的设备  {}   ·   {} 台已连接",
+                self.devices.len(),
+                connected
+            )
+            .into(),
+        );
+        let tooltip = if self.devices.is_empty() {
+            "电量岛 · 等待设备".to_string()
+        } else {
+            self.devices
+                .iter()
+                .map(|d| {
+                    format!(
+                        "{}：{}{}",
+                        fallback_name(d),
+                        d.saved
+                            .battery
+                            .map(|b| format!("{b}%"))
+                            .unwrap_or("—".into()),
+                        if d.fresh {
+                            ""
+                        } else {
+                            "（上次读数 / 未响应）"
+                        }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let _ = self
+            .tray
+            .set_tooltip(Some(tooltip.chars().take(120).collect::<String>()));
+    }
+
+    fn handle(&mut self, action: Action) {
+        match action {
+            Action::InitialShow => {
+                if let Err(error) = platform::initial_show(&self.ui) {
+                    platform::error_dialog(&error);
+                    let _ = slint::quit_event_loop();
+                }
+            }
+            Action::Refresh => {
+                if !self.busy {
+                    self.busy = true;
+                    self.ui.set_busy(true);
+                    if self.worker.send(WorkerCommand::Refresh).is_err() {
+                        self.notice("读取线程已退出，请从托盘退出后重新启动");
+                    }
+                }
+            }
+            Action::ReadingStarted => {
+                self.busy = true;
+                self.ui.set_busy(true);
+            }
+            Action::Readings(result) => {
+                self.busy = false;
+                self.ui.set_busy(false);
+                match result {
+                    Ok(readings) => {
+                        let saved: Vec<_> = self.devices.iter().map(|d| d.saved.clone()).collect();
+                        self.devices = model::merge_readings(&saved, readings, now());
+                        self.ui.set_updated(
+                            format!("上次刷新 {}", Local::now().format("%H:%M:%S")).into(),
+                        );
+                        if self.persist() {
+                            self.notice("");
+                        }
+                    }
+                    Err(error) => {
+                        for device in &mut self.devices {
+                            device.fresh = false;
+                            device.message = error.clone();
+                        }
+                        self.notice(error);
+                    }
+                }
+                self.update();
+            }
+            Action::Show => {
+                self.ui.set_autostart(platform::autostart_enabled());
+                if let Err(error) = platform::near_tray(&self.ui, self.tray.rect()) {
+                    self.notice(error);
+                }
+            }
+            Action::Hide => {
+                self.save_size();
+                self.ui.set_settings_open(false);
+                self.ui.set_editing(false);
+                let _ = self.ui.hide();
+            }
+            Action::SaveSize => self.save_size(),
+            Action::Edit(id) => {
+                if let Some(device) = self.devices.iter().find(|d| d.saved.id == id) {
+                    self.ui.set_editing_id(id.clone().into());
+                    self.ui.set_editing_name(
+                        format!("硬件名称：{}", device.saved.hardware_name).into(),
+                    );
+                    self.ui.set_editing_alias(device.saved.alias.clone().into());
+                    self.ui
+                        .set_editing_serial(if device.saved.serial.is_empty() {
+                            "接收器序列号：未提供".into()
+                        } else {
+                            format!("接收器序列号：{}", device.saved.serial).into()
+                        });
+                    self.ui.set_editing_identity(identity_note(device).into());
+                    self.rebind_ids.clear();
+                    let mut names = Vec::<slint::SharedString>::new();
+                    if device.present {
+                        for other in self
+                            .devices
+                            .iter()
+                            .filter(|d| !d.present && !d.saved.alias.is_empty() && d.saved.id != id)
+                        {
+                            self.rebind_ids.push(other.saved.id.clone());
+                            names.push(
+                                format!("{} · {}", other.saved.alias, other.saved.hardware_name)
+                                    .into(),
+                            );
+                        }
+                    }
+                    self.ui
+                        .set_rebind_options(ModelRc::new(VecModel::from(names)));
+                    self.ui.set_settings_open(false);
+                    self.ui.set_editing(true);
+                }
+            }
+            Action::Remark(id, alias) => {
+                let alias = alias.trim();
+                if alias.chars().count() > 64 {
+                    self.notice("备注最多 64 个字符");
+                    return;
+                }
+                if let Some(device) = self.devices.iter_mut().find(|d| d.saved.id == id) {
+                    device.saved.alias = alias.into();
+                }
+                if self.persist() {
+                    self.ui.set_editing(false);
+                    self.notice("备注已保存");
+                }
+                self.update();
+            }
+            Action::Rebind(target, index) => {
+                let Some(source) = self.rebind_ids.get(index).cloned() else {
+                    self.notice("请先选择离线记录");
+                    return;
+                };
+                match model::rebind(&mut self.devices, &source, &target) {
+                    Ok(()) => {
+                        if self.persist() {
+                            self.ui.set_editing(false);
+                            self.notice("备注已重新绑定");
+                        }
+                        self.update();
+                    }
+                    Err(error) => self.notice(error),
+                }
+            }
+            Action::Copy(id) => {
+                if let Some(device) = self.devices.iter().find(|d| d.saved.id == id) {
+                    if device.saved.serial.is_empty() {
+                        self.notice("设备未提供序列号");
+                        return;
+                    }
+                    match platform::copy_text(&device.saved.serial) {
+                        Ok(()) => self.notice("接收器序列号已复制"),
+                        Err(error) => self.notice(error),
+                    }
+                }
+            }
+            Action::Autostart(enabled) => {
+                match platform::set_autostart(enabled) {
+                    Ok(()) => self.notice(if enabled {
+                        "已启用开机自启"
+                    } else {
+                        "已关闭开机自启"
+                    }),
+                    Err(error) => self.notice(error),
+                }
+                self.ui.set_autostart(platform::autostart_enabled());
+            }
+            Action::Quit => {
+                self.save_size();
+                let _ = self.worker.send(WorkerCommand::Stop);
+                let _ = slint::quit_event_loop();
+            }
+        }
+    }
+}
+
+fn tray_icon() -> Result<TrayIcon, String> {
+    let menu = Menu::new();
+    let show = MenuItem::new("显示面板", true, None);
+    let refresh = MenuItem::new("立即刷新", true, None);
+    let quit = MenuItem::new("退出", true, None);
+    menu.append_items(&[&show, &refresh, &PredefinedMenuItem::separator(), &quit])
+        .map_err(|e| e.to_string())?;
+    let show_id = show.id().clone();
+    let refresh_id = refresh.id().clone();
+    let quit_id = quit.id().clone();
+    MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
+        if event.id == show_id {
+            post(Action::Show);
+        } else if event.id == refresh_id {
+            post(Action::Refresh);
+        } else if event.id == quit_id {
+            post(Action::Quit);
+        }
+    }));
+    TrayIconEvent::set_event_handler(Some(|event: TrayIconEvent| {
+        if matches!(
+            event,
+            TrayIconEvent::DoubleClick {
+                button: MouseButton::Left,
+                ..
+            }
+        ) {
+            post(Action::Show);
+        }
+    }));
+    let mut rgba = vec![0u8; 32 * 32 * 4];
+    for y in 0..32_i32 {
+        for x in 0..32_i32 {
+            let distance =
+                (((x as f32 - 15.5).powi(2) + (y as f32 - 15.5).powi(2)).sqrt() - 11.5).abs();
+            let bar = (9..=11).contains(&x) && (15..=21).contains(&y)
+                || (15..=17).contains(&x) && (10..=23).contains(&y)
+                || (21..=23).contains(&x) && (13..=21).contains(&y);
+            let a = if bar {
+                255
+            } else {
+                ((1.8 - distance).clamp(0.0, 1.0) * 255.0) as u8
+            };
+            let i = ((y * 32 + x) * 4) as usize;
+            rgba[i..i + 4].copy_from_slice(&[0, 164, 119, a]);
+        }
+    }
+    let icon = Icon::from_rgba(rgba, 32, 32).map_err(|e| e.to_string())?;
+    TrayIconBuilder::new()
+        .with_icon(icon)
+        .with_tooltip("电量岛")
+        .with_menu(Box::new(menu))
+        .with_menu_on_left_click(false)
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+pub fn run() -> Result<(), String> {
+    let arguments: Vec<_> = std::env::args().skip(1).collect();
+    if arguments.iter().any(|a| a == "--once") {
+        let readings = devices::scan()?;
+        // Explicit diagnostic mode prints battery and name, never serials.
+        for reading in readings {
+            println!(
+                "{}: {} ({})",
+                reading.hardware_name,
+                reading
+                    .battery
+                    .map(|b| format!("{b}%"))
+                    .unwrap_or("—".into()),
+                reading.message
+            );
+        }
+        return Ok(());
+    }
+    let autostart = arguments.iter().any(|a| a == "--autostart");
+    let Some(_instance) = platform::single_instance(autostart)? else {
+        return Ok(());
+    };
+    let _ipc = platform::ipc_window()?;
+    unsafe {
+        windows_sys::Win32::System::Com::CoInitializeEx(
+            std::ptr::null(),
+            windows_sys::Win32::System::Com::COINIT_APARTMENTTHREADED as u32,
+        );
+    }
+    slint::BackendSelector::new()
+        .backend_name("winit".into())
+        .renderer_name("software".into())
+        .select()
+        .map_err(|e| e.to_string())?;
+    let ui = AppWindow::new().map_err(|e| e.to_string())?;
+    let path = Config::path().map_err(|e| e.to_string())?;
+    let (config, config_error) = match Config::load(&path) {
+        Ok(c) => (c, None),
+        Err(e) => (Config::default(), Some(e.to_string())),
+    };
+    ui.window()
+        .set_size(slint::LogicalSize::new(config.width, config.height));
+    let initial = model::merge_readings(&config.devices, vec![], now());
+    let tray = tray_icon()?;
+    let (sender, receiver) = mpsc::channel();
+    let app = Rc::new(RefCell::new(App {
+        ui: ui.clone_strong(),
+        tray,
+        config,
+        path,
+        config_error,
+        devices: initial,
+        worker: sender.clone(),
+        busy: true,
+        rebind_ids: vec![],
+    }));
+    APP.with(|slot| *slot.borrow_mut() = Some(app.clone()));
+    ui.on_refresh(|| post(Action::Refresh));
+    ui.on_hide_window(|| post(Action::Hide));
+    let weak = ui.as_weak();
+    ui.on_drag_window(move || {
+        if let Some(ui) = weak.upgrade() {
+            platform::drag(&ui);
+        }
+    });
+    ui.on_edit_device(|id| post(Action::Edit(id.into())));
+    ui.on_save_remark(|id, alias| post(Action::Remark(id.into(), alias.into())));
+    ui.on_rebind_remark(|id, index| {
+        if index >= 0 {
+            post(Action::Rebind(id.into(), index as usize));
+        }
+    });
+    ui.on_copy_serial(|id| post(Action::Copy(id.into())));
+    ui.on_toggle_autostart(|enabled| post(Action::Autostart(enabled)));
+    ui.window().on_close_requested(|| {
+        post(Action::Hide);
+        slint::CloseRequestResponse::KeepWindowShown
+    });
+    ui.set_autostart(platform::autostart_enabled());
+    ui.set_busy(true);
+    app.borrow().update();
+    if app.borrow().config_error.is_some() {
+        app.borrow()
+            .notice("配置读取失败，原文件已保留；修复 config/settings.json 后重启");
+    }
+    // Winit creates its HWND only while the event loop is active.
+    // Startup stays completely hidden; normal launches show on the first tick.
+    if !autostart {
+        post(Action::InitialShow);
+    }
+    let worker = thread::Builder::new()
+        .name("battery-reader".into())
+        .spawn(move || {
+            let session = format!(
+                "{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            );
+            let mut tracker = model::SessionTracker::new(session);
+            loop {
+                post(Action::ReadingStarted);
+                post(Action::Readings(
+                    devices::scan().map(|rows| tracker.track(rows)),
+                ));
+                match receiver.recv_timeout(Duration::from_secs(60)) {
+                    Ok(WorkerCommand::Stop) | Err(RecvTimeoutError::Disconnected) => break,
+                    Ok(WorkerCommand::Refresh) | Err(RecvTimeoutError::Timeout) => {}
+                }
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    let result = slint::run_event_loop_until_quit().map_err(|e| e.to_string());
+    let _ = sender.send(WorkerCommand::Stop);
+    APP.with(|slot| *slot.borrow_mut() = None);
+    drop(app);
+    ui.hide().ok();
+    let _ = worker.join();
+    unsafe {
+        windows_sys::Win32::System::Com::CoUninitialize();
+    }
+    result
+}

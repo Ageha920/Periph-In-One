@@ -16,7 +16,11 @@ pub fn crc16(data: &[u8]) -> u16 {
     for &byte in data {
         crc ^= (byte as u16) << 8;
         for _ in 0..8 {
-            crc = if crc & 0x8000 != 0 { (crc << 1) ^ 0x1021 } else { crc << 1 };
+            crc = if crc & 0x8000 != 0 {
+                (crc << 1) ^ 0x1021
+            } else {
+                crc << 1
+            };
         }
     }
     crc
@@ -30,24 +34,39 @@ pub fn darkrim_query(seq: u8, kind: u8) -> [u8; 65] {
     report
 }
 
+/// hidapi's native Windows backend removes the zero report-ID byte on input.
+/// The original ctypes reader and our wire parser include that byte.
+pub fn restore_darkrim_report_id(input: &[u8]) -> Vec<u8> {
+    if input.first() == Some(&0xfe) {
+        std::iter::once(0).chain(input.iter().copied()).collect()
+    } else {
+        input.to_vec()
+    }
+}
+
 /// Reject truncated TLVs, incorrect sequence IDs and bad CRCs before using data.
 pub fn darkrim_tlvs(report: &[u8], expected_seq: u8) -> Option<Vec<(u8, &[u8])>> {
     if report.len() < 12 || report[0] != 0 || report[1] != 0xfe || report[2] != expected_seq {
         return None;
     }
     let end = 10 + u16::from_le_bytes([report[8], report[9]]) as usize;
-    if end + 2 > report.len() || crc16(&report[1..end]) != u16::from_be_bytes([report[end], report[end + 1]]) {
+    if end + 2 > report.len()
+        || crc16(&report[1..end]) != u16::from_be_bytes([report[end], report[end + 1]])
+    {
         return None;
     }
     let mut tlvs = Vec::new();
     let mut i = 10;
     while i < end {
-        if i + 2 > end { return None; }
+        if i + 2 > end {
+            return None;
+        }
         let next = i + 2 + report[i + 1] as usize;
-        if next > end { return None; }
+        if next > end {
+            return None;
+        }
         tlvs.push((report[i], &report[i + 2..next]));
         i = next;
     }
     Some(tlvs)
 }
-
