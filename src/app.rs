@@ -99,12 +99,20 @@ fn fallback_name(device: &Device) -> &str {
         &device.saved.alias
     } else if !device.saved.hardware_name.is_empty() {
         &device.saved.hardware_name
+    } else if device.saved.vid == 0x046d && device.saved.kind == "keyboard" {
+        "罗技无线键盘"
+    } else if device.saved.vid == 0x046d {
+        "罗技无线设备"
+    } else if device.saved.vid == 0x0c45 && device.saved.kind == "keyboard" {
+        "狼蛛无线键盘"
     } else if device.saved.kind == "mouse" {
         "ATK 无线鼠标"
     } else if device.saved.kind == "keyboard" {
         "KZZI 无线键盘"
     } else if device.saved.kind == "gamepad" {
         "BIGBIG WON 无线手柄"
+    } else if device.saved.kind == "bt-headset" {
+        "蓝牙耳机"
     } else {
         "DARKRIM 无线耳机"
     }

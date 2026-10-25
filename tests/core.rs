@@ -178,6 +178,8 @@ fn kzzi_identity_reply_yields_the_model_signature() {
         Some("Kzzi-K75 RGB key")
     );
     assert_eq!(kzzi_model_name(&[2, 0, 0, 0, 0, 54]), Some("Kzzi-K75 RGB"));
+    // AULA F87 Pro signature measured from the device (identity 0x05 reply).
+    assert_eq!(kzzi_model_name(&[3, 0, 0, 0, 1, 11]), Some("AULA F87 Pro"));
     assert_eq!(kzzi_model_name(&[9, 9, 9, 9, 9, 9]), None);
     let mut corrupt = reply;
     corrupt[19] ^= 1;
@@ -594,4 +596,279 @@ fn different_uids_stay_separate_even_on_matching_reports() {
     assert_eq!(devices.len(), 2);
     let ids: Vec<_> = devices.iter().map(|d| d.saved.id.clone()).collect();
     assert!(ids[0] != ids[1]);
+}
+
+#[test]
+fn hidpp_ping_frames_match_only_the_original_device_reply() {
+    let request = hidpp_ping(1);
+    assert_eq!(
+        &request[..8],
+        &[
+            HIDPP_LONG,
+            0x01,
+            0x00,
+            0x10 | HIDPP_SOFTWARE_ID,
+            0,
+            0,
+            0x42,
+            0
+        ]
+    );
+    // Captured LIGHTSPEED reply: long frame, protocol 4.2, echoed mark.
+    let reply = [HIDPP_LONG, 0x01, 0x00, 0x10 | HIDPP_SOFTWARE_ID, 4, 2, 0x42];
+    assert_eq!(hidpp_ping_reply(&reply, 1), Some((4, 2)));
+    // Another device's reply, a truncated frame and a notification
+    // (software id 0) must never look like a ping answer.
+    assert_eq!(hidpp_ping_reply(&reply, 2), None);
+    assert_eq!(hidpp_ping_reply(&reply[..6], 1), None);
+    let notification = [HIDPP_LONG, 0x01, 0x00, 0x10, 4, 2, 0x42];
+    assert_eq!(hidpp_ping_reply(&notification, 1), None);
+}
+
+#[test]
+fn hidpp_get_feature_index_requires_an_explicit_reply() {
+    let request = hidpp_get_feature(1, HIDPP_FEATURE_UNIFIED_BATTERY);
+    assert_eq!(
+        &request[..6],
+        &[HIDPP_LONG, 0x01, 0x00, HIDPP_SOFTWARE_ID, 0x10, 0x04]
+    );
+    let mut reply = [HIDPP_LONG, 0x01, 0x00, HIDPP_SOFTWARE_ID, 0x07, 0, 0];
+    assert_eq!(hidpp_feature_index(&reply, 1), Some(0x07));
+    // An unsupported feature reports index 0, not a failure.
+    reply[4] = 0;
+    assert_eq!(hidpp_feature_index(&reply, 1), None);
+    assert_eq!(hidpp_feature_index(&reply[..5], 1), None);
+}
+
+#[test]
+fn hidpp_unified_battery_prefers_soc_and_falls_back_to_approximation() {
+    let address = (1 << 4) | HIDPP_SOFTWARE_ID;
+    let reply = [0x10, 0x01, 0x07, address, 57, 4, 0];
+    assert_eq!(hidpp_unified_battery(&reply, 1, 0x07), Some(57));
+    // SoC 0 defers to the level approximation, exactly like Solaar.
+    assert_eq!(
+        hidpp_unified_battery(&[0x10, 0x01, 0x07, address, 0, 8, 0], 1, 0x07),
+        Some(90)
+    );
+    assert_eq!(
+        hidpp_unified_battery(&[0x10, 0x01, 0x07, address, 0, 4, 0], 1, 0x07),
+        Some(50)
+    );
+    assert_eq!(
+        hidpp_unified_battery(&[0x10, 0x01, 0x07, address, 0, 2, 0], 1, 0x07),
+        Some(20)
+    );
+    assert_eq!(
+        hidpp_unified_battery(&[0x10, 0x01, 0x07, address, 0, 1, 0], 1, 0x07),
+        Some(5)
+    );
+    // An empty approximation is no reading, and out-of-range data is dropped.
+    assert_eq!(
+        hidpp_unified_battery(&[0x10, 0x01, 0x07, address, 0, 0, 0], 1, 0x07),
+        None
+    );
+    assert_eq!(
+        hidpp_unified_battery(&[0x10, 0x01, 0x07, address, 101, 0, 0], 1, 0x07),
+        None
+    );
+    // Wrong device, wrong feature index, wrong function, truncated frame.
+    assert_eq!(hidpp_unified_battery(&reply, 2, 0x07), None);
+    assert_eq!(hidpp_unified_battery(&reply, 1, 0x08), None);
+    assert_eq!(
+        hidpp_unified_battery(&[0x10, 0x01, 0x07, HIDPP_SOFTWARE_ID, 57, 4, 0], 1, 0x07),
+        None
+    );
+    assert_eq!(hidpp_unified_battery(&reply[..5], 1, 0x07), None);
+}
+
+#[test]
+fn hidpp_battery_status_treats_zero_level_as_unknown() {
+    let reply = [0x10, 0x01, 0x05, HIDPP_SOFTWARE_ID, 55, 60, 1];
+    assert_eq!(hidpp_battery_status(&reply, 1, 0x05), Some(55));
+    assert_eq!(
+        hidpp_battery_status(&[0x10, 0x01, 0x05, HIDPP_SOFTWARE_ID, 0, 0, 0], 1, 0x05),
+        None
+    );
+    assert_eq!(hidpp_battery_status(&reply, 2, 0x05), None);
+    assert_eq!(hidpp_battery_status(&[], 1, 0x05), None);
+}
+
+#[test]
+fn hidpp_name_chunks_are_returned_as_raw_bytes() {
+    let request = hidpp_feature_call1(1, 0x07, 1, 3);
+    assert_eq!(
+        &request[..5],
+        &[HIDPP_LONG, 0x01, 0x07, (1 << 4) | HIDPP_SOFTWARE_ID, 3]
+    );
+    // Long-frame replies carry the chunk straight after the echo.
+    let reply = [
+        HIDPP_LONG,
+        0x01,
+        0x07,
+        (1 << 4) | HIDPP_SOFTWARE_ID,
+        b'G',
+        b'5',
+        b'0',
+    ];
+    assert_eq!(hidpp_name_text(&reply, 1, 0x07), Some(&b"G50"[..]));
+    assert_eq!(hidpp_name_text(&reply, 1, 0x08), None);
+    assert_eq!(hidpp_name_text(&reply[..6], 1, 0x07), None);
+    let length = [HIDPP_LONG, 0x01, 0x07, HIDPP_SOFTWARE_ID, 15, 0, 0];
+    assert_eq!(hidpp_name_length(&length, 1, 0x07), Some(15));
+    // Zero and oversized lengths are rejected so the chunk loop is bounded.
+    assert_eq!(
+        hidpp_name_length(
+            &[HIDPP_LONG, 0x01, 0x07, HIDPP_SOFTWARE_ID, 0, 0, 0],
+            1,
+            0x07
+        ),
+        None
+    );
+    assert_eq!(
+        hidpp_name_length(
+            &[HIDPP_LONG, 0x01, 0x07, HIDPP_SOFTWARE_ID, 33, 0, 0],
+            1,
+            0x07
+        ),
+        None
+    );
+}
+
+#[test]
+fn bluetooth_headset_identity_is_stable_across_scans() {
+    fn bt_headset(battery: Option<u8>) -> Reading {
+        Reading {
+            physical_id: "bt:B0F00C29021C".into(),
+            kind: "bt-headset".into(),
+            hardware_name: "SOUNDPEATS Space".into(),
+            serial: String::new(),
+            uid: String::new(),
+            vid: 0x05d6,
+            pid: 0x000a,
+            battery,
+            no_battery: true,
+            message: "已连接".into(),
+        }
+    }
+    let first = model::merge_readings(&[], vec![bt_headset(None)], 1);
+    assert_eq!(first.len(), 1);
+    assert!(first[0].saved.id.starts_with("local:"));
+    assert_eq!(first[0].saved.kind, "bt-headset");
+    assert!(first[0].present);
+    // A second scan with the same address must reuse the record, not fork it.
+    let saved: Vec<_> = first.iter().map(|d| d.saved.clone()).collect();
+    let second = model::merge_readings(&saved, vec![bt_headset(Some(80))], 2);
+    assert_eq!(second.len(), 1);
+    assert_eq!(second[0].saved.id, first[0].saved.id);
+    assert_eq!(second[0].saved.battery, Some(80));
+    assert!(second[0].fresh);
+    // Powered off: kept offline with the last reading intact.
+    let saved: Vec<_> = second.iter().map(|d| d.saved.clone()).collect();
+    let offline = model::merge_readings(&saved, vec![], 3);
+    assert_eq!(offline.len(), 1);
+    assert!(!offline[0].present);
+    assert_eq!(offline[0].saved.battery, Some(80));
+}
+
+#[test]
+fn hidpp_receiver_registers_follow_the_rap_layout() {
+    let read = hidpp_get_register(0xff, HIDPP_REGISTER_NOTIFICATIONS);
+    assert_eq!(&read[..], &[0x10, 0xff, 0x81, 0x00, 0, 0, 0]);
+    let write = hidpp_set_register(0xff, HIDPP_REGISTER_CONNECTIONS, [0x02, 0, 0]);
+    assert_eq!(&write[..], &[0x10, 0xff, 0x80, 0x02, 0x02, 0, 0]);
+    // A read reply echoes sub id and register before the three data bytes.
+    let reply = [0x10, 0xff, 0x81, 0x00, 0x00, 0x01, 0x00];
+    assert_eq!(
+        hidpp_get_register_reply(&reply, 0xff, HIDPP_REGISTER_NOTIFICATIONS),
+        Some([0x00, 0x01, 0x00])
+    );
+    assert_eq!(hidpp_pairing_count([0x00, 0x01, 0x00]), 1);
+    // Another register or an error frame never satisfies the matcher.
+    assert_eq!(
+        hidpp_get_register_reply(&reply, 0xff, HIDPP_REGISTER_CONNECTIONS),
+        None
+    );
+    assert_eq!(
+        hidpp_get_register_reply(&[0x10, 0xff, 0x8f, 0x00, 0x01, 0x09, 0x00], 0xff, 0x00),
+        None
+    );
+    assert!(hidpp_set_register_ok(
+        &[0x10, 0xff, 0x80, 0x02, 0x00, 0x00, 0x00],
+        0xff,
+        0x02
+    ));
+}
+
+#[test]
+fn hidpp_arrival_notification_reports_slot_link_and_wpid() {
+    // Captured from a LIGHTSPEED receiver: slot 1, mouse, G502 wpid 0x407F.
+    let online = [0x10, 0x01, 0x41, 0x0c, 0x22, 0x7f, 0x40];
+    assert_eq!(
+        hidpp_connection_notification(&online),
+        Some((0x01, true, 0x407f))
+    );
+    // Device-info bit 6 set: the link is not established.
+    let offline = [0x10, 0x01, 0x41, 0x0c, 0x62, 0x7f, 0x40];
+    assert_eq!(
+        hidpp_connection_notification(&offline),
+        Some((0x01, false, 0x407f))
+    );
+    assert_eq!(hidpp_connection_notification(&offline[..6]), None);
+    assert_eq!(
+        hidpp_connection_notification(&[0x10, 0x01, 0x40, 0x0c, 0, 0, 0]),
+        None
+    );
+}
+
+#[test]
+fn aula_command_frames_carry_the_ccitt_crc() {
+    // CRC-16/CCITT-FALSE check value for "123456789" is 0x29B1.
+    assert_eq!(aula_crc16(b"123456789"), 0x29b1);
+    // Battery request frames from the vendor SDK: cmd 0x11 (0x51 fallback),
+    // mode 0x16, CRC low byte first at [6..8] over the zeroed frame.
+    let request = aula_command_request(AULA_CMD_BATTERY, AULA_MODE_BATTERY);
+    assert_eq!(
+        &request[..8],
+        &[0x11, 0x16, 0x00, 0x00, 0x00, 0x00, 0xc2, 0x1b]
+    );
+    let fallback = aula_command_request(AULA_CMD_BATTERY_ALT, AULA_MODE_BATTERY);
+    assert_eq!(
+        &fallback[..8],
+        &[0x51, 0x16, 0x00, 0x00, 0x00, 0x00, 0xb5, 0x38]
+    );
+}
+
+#[test]
+fn aula_command_battery_reads_level_and_charging_state() {
+    // A Windows read carries the report-id prefix: [0]=0, frame at 1..33,
+    // level at frame[8], charging flag at frame[9].
+    let mut reply = [0u8; 33];
+    reply[1] = AULA_CMD_BATTERY;
+    reply[2] = AULA_MODE_BATTERY;
+    reply[9] = 73;
+    reply[10] = 1;
+    assert_eq!(
+        aula_command_battery(&reply, AULA_CMD_BATTERY),
+        Some((73, 1))
+    );
+    // A bare 32-byte frame parses the same way.
+    let mut bare = [0u8; 32];
+    bare[0] = AULA_CMD_BATTERY;
+    bare[1] = AULA_MODE_BATTERY;
+    bare[7] = 5;
+    bare[8] = 100;
+    assert_eq!(
+        aula_command_battery(&bare, AULA_CMD_BATTERY),
+        Some((100, 0))
+    );
+    // Wrong echo, non-zero status, short frames and level 0 are rejected.
+    assert_eq!(aula_command_battery(&reply, AULA_CMD_BATTERY_ALT), None);
+    let mut bad_status = reply;
+    bad_status[3] = 1;
+    assert_eq!(aula_command_battery(&bad_status, AULA_CMD_BATTERY), None);
+    let mut empty = reply;
+    empty[9] = 0;
+    assert_eq!(aula_command_battery(&empty, AULA_CMD_BATTERY), None);
+    assert_eq!(aula_command_battery(&reply[..32], AULA_CMD_BATTERY), None);
+    assert_eq!(aula_command_battery(&reply[..20], AULA_CMD_BATTERY), None);
 }

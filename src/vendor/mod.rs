@@ -13,17 +13,21 @@
 
 mod atk;
 mod atk_v2;
+mod aula;
 mod bigbigwon;
 mod darkrim;
 mod kzzi;
+mod logitech;
 
 use hidapi::{DeviceInfo, HidApi};
 
 pub use atk::AtkMouse;
 pub use atk_v2::AtkV2Mouse;
+pub use aula::AulaCommandKeyboard;
 pub use bigbigwon::BigbigwonGamepad;
 pub use darkrim::DarkrimHeadset;
 pub use kzzi::KzziKeyboard;
+pub use logitech::LogitechReceiver;
 
 /// What a product line implements. Adapters declare capabilities so the UI can
 /// decide what to offer; no adapter may declare a write capability before a
@@ -57,6 +61,10 @@ pub struct Outcome {
     pub hardware_name: Option<String>,
     /// Protocol-reported per-unit identity; empty when the family has none.
     pub uid: String,
+    /// Pairing slot on a multi-device receiver. `scan` keeps single-device
+    /// probes unsuffixed and marks additional slots on the physical id so one
+    /// receiver yields distinct records.
+    pub slot: Option<u8>,
     /// Final UI status message.
     pub message: String,
 }
@@ -77,6 +85,12 @@ pub trait VendorAdapter {
     /// Probe one receiver interface and report one outcome. Adapters own
     /// their transport and retries; errors surface as UI messages.
     fn read(&self, api: &HidApi, info: &DeviceInfo) -> Outcome;
+
+    /// One probe may address several paired devices on a multi-device
+    /// receiver; the default is exactly one outcome.
+    fn read_all(&self, api: &HidApi, info: &DeviceInfo) -> Vec<Outcome> {
+        vec![self.read(api, info)]
+    }
 }
 
 /// Every supported product line, in scan order. Match rules are disjoint by
@@ -87,4 +101,6 @@ pub const ADAPTERS: &[&dyn VendorAdapter] = &[
     &DarkrimHeadset,
     &KzziKeyboard,
     &BigbigwonGamepad,
+    &LogitechReceiver,
+    &AulaCommandKeyboard,
 ];
