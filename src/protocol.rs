@@ -216,6 +216,15 @@ pub fn kzzi_model_name(psd: &[u8]) -> Option<&'static str> {
     })
 }
 
+/// PSDs of models verified live to keep their battery private: the 0x4A
+/// query stays unanswered even while the keyboard is linked, so a missing
+/// reading is the model's trait rather than a dead link. Silence on any
+/// other profile may still mean the keyboard is off.
+pub fn kzzi_battery_private(psd: &[u8]) -> bool {
+    // Kzzi-K75 RGB key, verified on the 3554:FA09 receiver.
+    matches!(psd, [2, 0, 0, 0, 0, 55])
+}
+
 /// BIGBIG WON (Zikway) controller short frames over the FF7A vendor interface.
 /// The wire report is 65 bytes with report id 0; the payload starts with 0xA5,
 /// byte 1 is the total frame length including A5 and the trailing additive sum

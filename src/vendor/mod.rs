@@ -49,6 +49,10 @@ impl Capabilities {
 #[derive(Debug, Default)]
 pub struct Outcome {
     pub battery: Option<u8>,
+    /// The adapter verified the device is live but its model provides no
+    /// battery reading. The UI counts it as connected instead of calling
+    /// the silence "no response".
+    pub no_battery: bool,
     /// Replaces the USB product string when the protocol identifies the model.
     pub hardware_name: Option<String>,
     /// Protocol-reported per-unit identity; empty when the family has none.

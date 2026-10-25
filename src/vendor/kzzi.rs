@@ -1,6 +1,8 @@
 //! KZZI keyboards behind a Compx 2.4G receiver (3554:FA09). The receiver
 //! answers identity itself; battery queries are relayed to the keyboard and
-//! only models whose firmware implements them reply. The interface only
+//! only models whose firmware implements them reply. Models verified to keep
+//! their battery private report `no_battery`, so a linked keyboard without a
+//! reading is told apart from one that answered nothing. The interface only
 //! answers requests written through the control endpoint (hidapi fails there
 //! with error 1784), so the exchange runs on `devices::KzziLink` raw handles.
 
@@ -32,13 +34,16 @@ impl VendorAdapter for KzziKeyboard {
 
     fn read(&self, _api: &HidApi, info: &DeviceInfo) -> Outcome {
         match probe(info) {
-            Ok((battery, name)) => {
+            Ok((battery, name, private)) => {
                 let identified = !name.is_empty();
                 Outcome {
                     battery,
+                    no_battery: battery.is_none() && private,
                     hardware_name: identified.then_some(name),
-                    message: if battery.is_some() || identified {
+                    message: if battery.is_some() {
                         "已连接".into()
+                    } else if private {
+                        "该型号不提供电量".into()
                     } else {
                         "键盘未响应，请确认键盘已开机".into()
                     },
@@ -53,10 +58,11 @@ impl VendorAdapter for KzziKeyboard {
     }
 }
 
-fn probe(info: &DeviceInfo) -> Result<(Option<u8>, String), String> {
+fn probe(info: &DeviceInfo) -> Result<(Option<u8>, String, bool), String> {
     let link = KzziLink::open(&info.path().to_string_lossy())?;
     let mut buffer = [0u8; 64];
     let mut name = String::new();
+    let mut private = false;
     for _ in 0..3 {
         link.drain();
         link.send(&protocol::kzzi_identity_request())?;
@@ -65,6 +71,7 @@ fn probe(info: &DeviceInfo) -> Result<(Option<u8>, String), String> {
             if let Some(n) = link.read(&mut buffer, Duration::from_millis(120))
                 && let Some(psd) = protocol::kzzi_identity(&buffer[..n])
             {
+                private = protocol::kzzi_battery_private(&psd);
                 name = protocol::kzzi_model_name(&psd)
                     .unwrap_or("无线键盘")
                     .to_string();
@@ -82,9 +89,9 @@ fn probe(info: &DeviceInfo) -> Result<(Option<u8>, String), String> {
             if let Some(n) = link.read(&mut buffer, Duration::from_millis(120))
                 && let Some((level, _)) = protocol::kzzi_battery(&buffer[..n])
             {
-                return Ok((Some(level), name));
+                return Ok((Some(level), name, private));
             }
         }
     }
-    Ok((None, name))
+    Ok((None, name, private))
 }

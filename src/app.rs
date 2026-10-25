@@ -208,6 +208,7 @@ impl App {
                         .into(),
                     level: saved.battery.unwrap_or(0).min(100) as f32 / 100.0,
                     fresh: device.fresh,
+                    has_battery: device.fresh && saved.battery.is_some(),
                     present: device.present,
                     status: if device.fresh {
                         "已连接".into()
@@ -253,19 +254,19 @@ impl App {
                 .devices
                 .iter()
                 .map(|d| {
-                    format!(
-                        "{}：{}{}",
-                        fallback_name(d),
-                        d.saved
-                            .battery
-                            .map(|b| format!("{b}%"))
-                            .unwrap_or("—".into()),
-                        if d.fresh {
-                            ""
-                        } else {
-                            "（上次读数 / 未响应）"
-                        }
-                    )
+                    let level = d
+                        .saved
+                        .battery
+                        .map(|b| format!("{b}%"))
+                        .unwrap_or("—".into());
+                    let note = if !d.fresh {
+                        "（上次读数 / 未响应）"
+                    } else if d.saved.battery.is_none() {
+                        "（不提供电量）"
+                    } else {
+                        ""
+                    };
+                    format!("{}：{}{}", fallback_name(d), level, note)
                 })
                 .collect::<Vec<_>>()
                 .join("\n");

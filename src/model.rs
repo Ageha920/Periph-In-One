@@ -28,6 +28,9 @@ pub struct Reading {
     pub vid: u16,
     pub pid: u16,
     pub battery: Option<u8>,
+    /// The adapter verified this device is live but its model provides no
+    /// battery reading; it stays fresh without a value.
+    pub no_battery: bool,
     pub message: String,
 }
 
@@ -250,7 +253,7 @@ pub fn merge_readings(saved: &[SavedDevice], readings: Vec<Reading>, now: u64) -
         device.saved.pid = reading.pid;
         device.saved.identity_conflict |= conflict;
         device.present = true;
-        device.fresh = reading.battery.is_some_and(|level| level <= 100);
+        device.fresh = reading.battery.is_some_and(|level| level <= 100) || reading.no_battery;
         device.message = reading.message;
         if let Some(battery) = reading.battery.filter(|b| *b <= 100) {
             device.saved.battery = Some(battery);

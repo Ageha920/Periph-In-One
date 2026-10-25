@@ -447,6 +447,7 @@ pub fn scan() -> Result<Vec<Reading>, String> {
             vid: info.vendor_id(),
             pid: info.product_id(),
             battery: outcome.battery,
+            no_battery: outcome.no_battery,
             message: outcome.message,
         });
     }

@@ -22,6 +22,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "373B:1216",
             "72%",
             0.72,
+            true,
+            "更新于 14:32",
         ),
         (
             "游戏手柄",
@@ -30,6 +32,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "413D:2104",
             "85%",
             0.85,
+            true,
+            "更新于 14:32",
         ),
         (
             "无线键盘",
@@ -38,26 +42,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "3554:FA09",
             "—",
             0.0,
+            true,
+            "该型号不提供电量",
         ),
     ]
     .into_iter()
     .map(
-        |(title, kind, hardware, usb, percentage, level)| DeviceRow {
+        |(title, kind, hardware, usb, percentage, level, fresh, updated)| DeviceRow {
             title: title.into(),
             kind: kind.into(),
             hardware_name: hardware.into(),
             usb_id: format!("VID: 0x{} · PID: 0x{}", &usb[..4], &usb[5..]).into(),
             percentage: percentage.into(),
             level,
+            has_battery: fresh && level > 0.0,
+            fresh,
             present: true,
-            fresh: level > 0.0,
-            status: if level > 0.0 {
-                "已连接"
-            } else {
-                "未返回电量"
-            }
-            .into(),
-            updated: "14:32".into(),
+            status: if fresh { "已连接" } else { "未响应" }.into(),
+            updated: updated.into(),
             alias: title.into(),
             ..Default::default()
         },

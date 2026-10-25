@@ -14,6 +14,7 @@ fn reading(physical: &str, serial: &str, battery: Option<u8>) -> Reading {
         vid: 0x373b,
         pid: 0x1216,
         battery,
+        no_battery: false,
         message: String::new(),
     }
 }
@@ -32,6 +33,7 @@ fn gamepad_reading(physical: &str, uid: &str, pid: u16, battery: Option<u8>) -> 
         vid: 0x413d,
         pid,
         battery,
+        no_battery: false,
         message: String::new(),
     }
 }
@@ -183,6 +185,32 @@ fn kzzi_identity_reply_yields_the_model_signature() {
     assert_eq!(kzzi_identity(&reply[..9]), None);
     // A battery reply is not an identity reply.
     assert_eq!(kzzi_identity(kzzi_request(0x4a).as_slice()), None);
+}
+
+#[test]
+fn kzzi_battery_private_covers_only_the_verified_profile() {
+    // Kzzi-K75 RGB key, live-verified silent on 0x4A while linked.
+    assert!(kzzi_battery_private(&[2, 0, 0, 0, 0, 55]));
+    // The K75 RGB sibling and unknown profiles stay unverified: silence
+    // there may still mean the keyboard is off.
+    assert!(!kzzi_battery_private(&[2, 0, 0, 0, 0, 54]));
+    assert!(!kzzi_battery_private(&[9, 9, 9, 9, 9, 9]));
+    assert!(!kzzi_battery_private(&[]));
+}
+
+#[test]
+fn battery_private_devices_stay_fresh_without_inventing_values() {
+    let mut linked = reading("usb-port-a", "SN-K75", None);
+    linked.no_battery = true;
+    let devices = model::merge_readings(&[], vec![linked], 100);
+    assert!(devices[0].present);
+    assert!(devices[0].fresh);
+    assert_eq!(devices[0].saved.battery, None);
+    assert_eq!(devices[0].saved.last_success, None);
+    // A battery-capable device that stays silent is not fresh.
+    let silent = model::merge_readings(&[], vec![reading("usb-port-b", "SN-K68", None)], 100);
+    assert!(silent[0].present);
+    assert!(!silent[0].fresh);
 }
 
 #[test]
