@@ -72,7 +72,7 @@ fn probe(info: &DeviceInfo) -> Result<(Option<u8>, String, bool), String> {
                 && let Some(psd) = protocol::kzzi_identity(&buffer[..n])
             {
                 private = protocol::kzzi_battery_private(&psd);
-                name = protocol::kzzi_model_name(&psd)
+                name = protocol::compx_model_name(&psd)
                     .unwrap_or("无线键盘")
                     .to_string();
             }

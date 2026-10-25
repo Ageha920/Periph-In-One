@@ -234,9 +234,12 @@ pub fn kzzi_battery(report: &[u8]) -> Option<(u8, u8)> {
     ((1..=100).contains(&level)).then_some((level, state))
 }
 
-/// Model names keyed by the profile signature recorded in the vendor driver's
-/// device profiles (Dev/*/KB.ini Psd= hex values, names from Cfg.ini DevName).
-pub fn kzzi_model_name(psd: &[u8]) -> Option<&'static str> {
+/// Model names keyed by the profile signature recorded in the vendor drivers'
+/// device profiles (KZZI KB.ini Psd= hex values, names from Cfg.ini DevName;
+/// MCHOSE HUB YProduct.xml Productpassword). The Compx 2.4G receiver is an OEM
+/// line shared across brands (KZZI, AULA, MCHOSE), so one table carries
+/// their name spaces.
+pub fn compx_model_name(psd: &[u8]) -> Option<&'static str> {
     Some(match psd {
         [2, 0, 0, 0, 0, 54] => "Kzzi-K75 RGB",
         [2, 0, 0, 0, 0, 55] => "Kzzi-K75 RGB key",
@@ -261,6 +264,19 @@ pub fn kzzi_model_name(psd: &[u8]) -> Option<&'static str> {
         [3, 0, 0, 0, 5, 62] => "Kzzi-i98",
         [6, 0, 0, 0, 0, 1] => "Kzzi-Z98",
         [6, 0, 0, 0, 0, 29] => "Kzzi-K21",
+        // MCHOSE HUB YProduct.xml Productpassword values (G75 live-verified
+        // on the 3554:FA09 receiver; the rest share the receiver per the
+        // driver's device table and stay unverified).
+        [3, 0, 0, 0, 0, 119] => "MCHOSE K99",
+        [3, 0, 0, 0, 0, 214] => "MCHOSE X75",
+        [3, 0, 0, 0, 1, 50] => "MCHOSE G98",
+        [3, 0, 0, 0, 1, 21] => "MCHOSE G75",
+        [3, 0, 0, 0, 1, 53] => "MCHOSE K87",
+        [3, 0, 0, 0, 1, 116] => "MCHOSE GX87",
+        [3, 0, 0, 0, 1, 198] => "MCHOSE X75 V2",
+        [3, 0, 0, 0, 1, 199] => "MCHOSE KX75",
+        [3, 0, 0, 0, 1, 223] => "MCHOSE K99 V2",
+        [3, 0, 0, 0, 1, 237] => "MCHOSE GX87 V2",
         _ => return None,
     })
 }

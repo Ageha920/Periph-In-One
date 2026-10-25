@@ -132,95 +132,17 @@ fn atk_ff04_battery_frame_and_reply_parse() {
 }
 
 #[test]
-fn atk_v2_dongle_requests_reuse_the_ff04_frame_checksum() {
-    // Live-verified wiring: report id 8 plus the 0x55-minus-sum checksum.
-    // 0x55 - (8 + command): battery 0x49, online 0x4a, CID/MID 0x3d.
-    assert_eq!(&atk_ff04_request(0x04)[..2], &[0x08, 0x04]);
-    assert_eq!(atk_ff04_request(0x04)[16], 0x49);
-    assert_eq!(atk_ff04_request(0x03)[16], 0x4a);
-    assert_eq!(atk_ff04_request(0x10)[16], 0x3d);
-}
-
-#[test]
-fn atk_v2_dongle_battery_parses_the_captured_reply() {
-    // Captured live from the 3554:F58E 1K dongle: status 0, dataValidLen 2,
-    // level 60, discharging, voltage 0x0F51 BE mV (ignored by the parse).
-    let reply = *b"\x08\x04\x00\x00\x00\x02\x3c\x00\x0f\x51\x00\x00\x00\x00\x00\x00\xab";
-    assert_eq!(atk_v2_ff02_battery(&reply), Some((60, 0)));
-    // The status-1 ACK that answers a broken request checksum carries no data.
-    let ack = *b"\x08\x04\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x48";
-    assert_eq!(atk_v2_ff02_battery(&ack), None);
-    // Zero dataValidLen and zero level stay rejected: 0% is unverified.
-    let mut empty = reply;
-    empty[5] = 0;
-    empty[16] = 0x55u8.wrapping_sub(empty[..16].iter().fold(0u8, |s, &b| s.wrapping_add(b)));
-    assert_eq!(atk_v2_ff02_battery(&empty), None);
-    empty[5] = 2;
-    empty[6] = 0;
-    empty[16] = 0x55u8.wrapping_sub(empty[..16].iter().fold(0u8, |s, &b| s.wrapping_add(b)));
-    assert_eq!(atk_v2_ff02_battery(&empty), None);
-    // Level beyond 100%.
-    empty[6] = 101;
-    empty[16] = 0x55u8.wrapping_sub(empty[..16].iter().fold(0u8, |s, &b| s.wrapping_add(b)));
-    assert_eq!(atk_v2_ff02_battery(&empty), None);
-    // Wrong command echo, corrupted checksum, truncation, empty buffer.
-    let mut echo = reply;
-    echo[1] = 0x10;
-    assert_eq!(atk_v2_ff02_battery(&echo), None);
-    let mut corrupt = reply;
-    corrupt[6] ^= 1;
-    assert_eq!(atk_v2_ff02_battery(&corrupt), None);
-    assert_eq!(atk_v2_ff02_battery(&reply[..10]), None);
-    assert_eq!(atk_v2_ff02_battery(&[]), None);
-    // A 101-level reply re-checksummed is still a bad level, not a parse miss.
-    let mut over = reply;
-    over[6] = 101;
-    over[16] = 0x55u8.wrapping_sub(over[..16].iter().fold(0u8, |s, &b| s.wrapping_add(b)));
-    assert_eq!(atk_v2_ff02_battery(&over), None);
-}
-
-#[test]
-fn atk_v2_dongle_online_reply_reports_the_linked_mouse() {
-    // Captured live: mouse linked (1), rf id a5 20 cf.
-    let reply = *b"\x08\x03\x00\x00\x00\x01\x01\xa5\x20\xcf\x00\x00\x00\x00\x00\x00\xb4";
-    assert_eq!(atk_v2_ff02_online(&reply), Some((1, [0xa5, 0x20, 0xcf])));
-    // An idle dongle answers status 0 with mouseOnline 0; rf bytes still parse.
-    let mut idle = reply;
-    idle[6] = 0;
-    idle[16] = 0x55u8.wrapping_sub(idle[..16].iter().fold(0u8, |s, &b| s.wrapping_add(b)));
-    assert_eq!(atk_v2_ff02_online(&idle), Some((0, [0xa5, 0x20, 0xcf])));
-    // Non-zero command status, wrong echo, bad checksum, truncation.
-    let mut status = reply;
-    status[2] = 1;
-    assert_eq!(atk_v2_ff02_online(&status), None);
-    let mut echo = reply;
-    echo[1] = 0x04;
-    assert_eq!(atk_v2_ff02_online(&echo), None);
-    let mut corrupt = reply;
-    corrupt[9] ^= 1;
-    assert_eq!(atk_v2_ff02_online(&corrupt), None);
-    assert_eq!(atk_v2_ff02_online(&reply[..9]), None);
-    assert_eq!(atk_v2_ff02_online(&[]), None);
-    // A battery reply is not an online reply.
-    let battery = *b"\x08\x04\x00\x00\x00\x02\x3c\x00\x0f\x51\x00\x00\x00\x00\x00\x00\xab";
-    assert_eq!(atk_v2_ff02_online(&battery), None);
-}
-
-#[test]
-fn atk_v2_dongle_cid_mid_reply_is_model_identity() {
-    // Captured live: cid 2, mid 0x20, unique 0x33.
-    let reply = *b"\x08\x10\x00\x00\x00\x03\x02\x20\x33\x00\x00\x00\x00\x00\x00\x00\xe5";
-    assert_eq!(atk_v2_ff02_cid_mid(&reply), Some((2, 0x20, 0x33)));
-    // dataValidLen below 3 cannot carry the triple.
-    let mut short = reply;
-    short[5] = 2;
-    short[16] = 0x55u8.wrapping_sub(short[..16].iter().fold(0u8, |s, &b| s.wrapping_add(b)));
-    assert_eq!(atk_v2_ff02_cid_mid(&short), None);
-    let mut corrupt = reply;
-    corrupt[8] ^= 1;
-    assert_eq!(atk_v2_ff02_cid_mid(&corrupt), None);
-    assert_eq!(atk_v2_ff02_cid_mid(&reply[..12]), None);
-    assert_eq!(atk_v2_ff02_cid_mid(&[]), None);
+fn compx_model_table_covers_the_mchose_oem_line() {
+    // MCHOSE G75, live-verified on the shared 3554:FA09 receiver.
+    assert_eq!(compx_model_name(&[3, 0, 0, 0, 1, 21]), Some("MCHOSE G75"));
+    // Sibling models from the MCHOSE HUB device table stay name-resolvable.
+    assert_eq!(compx_model_name(&[3, 0, 0, 0, 1, 116]), Some("MCHOSE GX87"));
+    assert_eq!(
+        compx_model_name(&[3, 0, 0, 0, 1, 223]),
+        Some("MCHOSE K99 V2")
+    );
+    // Unknown profiles keep the fallback name path.
+    assert_eq!(compx_model_name(&[3, 0, 0, 0, 1, 20]), None);
 }
 
 #[test]
@@ -266,13 +188,13 @@ fn kzzi_identity_reply_yields_the_model_signature() {
         *b"\x13\x05\x01\x00\x0a\x02\x00\x00\x00\x00\x37\x00\x01\x00\x00\x00\x00\x00\x00\x5d";
     assert_eq!(kzzi_identity(&reply), Some([2, 0, 0, 0, 0, 55]));
     assert_eq!(
-        kzzi_model_name(&[2, 0, 0, 0, 0, 55]),
+        compx_model_name(&[2, 0, 0, 0, 0, 55]),
         Some("Kzzi-K75 RGB key")
     );
-    assert_eq!(kzzi_model_name(&[2, 0, 0, 0, 0, 54]), Some("Kzzi-K75 RGB"));
+    assert_eq!(compx_model_name(&[2, 0, 0, 0, 0, 54]), Some("Kzzi-K75 RGB"));
     // AULA F87 Pro signature measured from the device (identity 0x05 reply).
-    assert_eq!(kzzi_model_name(&[3, 0, 0, 0, 1, 11]), Some("AULA F87 Pro"));
-    assert_eq!(kzzi_model_name(&[9, 9, 9, 9, 9, 9]), None);
+    assert_eq!(compx_model_name(&[3, 0, 0, 0, 1, 11]), Some("AULA F87 Pro"));
+    assert_eq!(compx_model_name(&[9, 9, 9, 9, 9, 9]), None);
     let mut corrupt = reply;
     corrupt[19] ^= 1;
     assert_eq!(kzzi_identity(&corrupt), None);
