@@ -23,6 +23,7 @@ cargo clippy --locked --all-targets -- -D warnings
 | --- | --- |
 | `src/protocol.rs` | 纯报文构造、校验与解析，不执行设备 I/O |
 | `src/devices.rs` | 接收器匹配、HID 传输与设备读数 |
+| `src/vendor/` | 厂商适配器与注册表（见 [设备适配规范](docs/ADAPTATION.md)） |
 | `src/model.rs` | 设备身份、历史记录、备注及合并规则 |
 | `src/config.rs` | 配置读取与原子保存 |
 | `src/app.rs` | Slint 数据绑定、后台任务和操作反馈 |
@@ -33,6 +34,8 @@ cargo clippy --locked --all-targets -- -D warnings
 添加功能前，先检查当前依赖、Rust / Slint / Windows API 与可复用的开源实现。优先使用已有能力；新增依赖需说明用途、许可证与体积影响。运行时和项目工具保持 Rust、Slint 或 PowerShell，不引入 Python / WebView 运行时。
 
 ## 新设备和协议
+
+新增或扩展设备适配的完整流程见 [设备适配规范](docs/ADAPTATION.md)。
 
 - 精确记录 VID/PID、Usage Page / Usage、连接方式、接收器与固件版本。避免仅凭商品名或 VID 扩大匹配范围；有跨 PID 匹配需求时给出接口证据。
 - 明确区分“已识别”“已实现协议”和“已实测电量”。至少检查正常读数、超时、断开 / 休眠与重连；未验证的型号和充电状态不要写成已支持。
