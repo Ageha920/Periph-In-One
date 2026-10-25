@@ -58,7 +58,7 @@
 
 ## 7. 范例
 
-三节均已随复查落位（2026-10-25）：7.1 五条 PASS 加一条表格污染清洗后采用，7.2 五条 PASS 一条修正后采用，7.3 七条全 PASS。7.4/7.6 为第二批，随罗技接收器家族扩展与蓝牙音频路径的复查写入。
+三节均已随复查落位（2026-10-25）：7.1 五条 PASS 加一条表格污染清洗后采用，7.2 五条 PASS 一条修正后采用，7.3 七条全 PASS。7.4/7.5/7.6 为第二批，随罗技接收器家族扩展、狼蛛驱动分析与蓝牙音频路径的复查写入。
 
 ### 7.1 ATK HUB（跨家族品牌）
 
@@ -118,6 +118,20 @@
 
 **边界**：HID++ 1.0-only 设备（Unifying 早期键鼠）对长帧 Ping 以 0x8F 错误应答，不匹配即视为离槽，不做 1.0 寄存器电量回退（Windows 集合拆分下短设备帧路由未经验证）；槽位类别（键/鼠）在配对寄存器缺席时按产品线默认 mouse 显示，Unifying 上配键盘的用户可见此局限。
 
+### 7.5 狼蛛 AULA（跨 OEM 平台品牌）
+
+来源：Aula Hub 2.2.3 官方客户端静态分析（Electron，`Aula Hub Setup 2.2.3.exe`，SHA-256 1a91cd2a…748f；NSIS 内 `app-64.7z` → `resources/app.asar` → 渲染层 `dist/assets/index-*.js` 设备表与 SDK chunk，主进程与渲染层均经 javascript-obfuscator 混淆，经 webcrack 反混淆后提取）。C45 无线键盘协议已按静态分析实现（已实现未实测），其余平台标已识别。
+
+**家族版图**：AULA 全系至少横跨 12 个 OEM 平台，同一品牌下互不同协议，仅 3554:FA09 与本仓库既有家族重合——`F75 / F87Pro / F99` 无线键盘均为 `3554:FA09, FF02:0002`（与 KZZI 258A 家族同源，F87 Pro 已真机实测）；表中另有一条 `F87` 固件人格枚举为 `3554:FA09, FF00:0001`，同 PID 不同 Usage Page，识别必须锚定 Usage Page 的又一实例。有线键盘（`F75/F87/F87Pro/F99`）枚举为通用键盘 VID `258A`，PID `0x10C` 为主、`0x01/0x02` 亦有，Usage Page `FF00:0001`——独立的有线协议，按第 3 节规则只入附录 B。
+
+**C45 命令协议（已实现未实测）**：新款无线键盘的 Dongle（F87ProV2 系、F108ProV2 系等）枚举为 `0x0C45×{FEFC/FEFE/FEF9}`，SDK 通道按型号落在 `FF60/FF67/FF68/FF70/FF80` 集合（usage `0x01/0x61/0x71`；FF67/FF70 为设备表 filterAlias 记录的旧固件人格页）。帧为 32 字节无编号报表：`[0]=cmd、[1]=mode、[6..8]=CRC-16/CCITT-FALSE（覆盖全帧且 CRC 槽置零，低字节在前）`；应答回显 cmd/mode、`[2]=0` 为状态正常、电量在 `[8]`、充电标志在 `[9]`，厂商客户端自身不校验应答 CRC。电量命令 `cmd=0x11, mode=0x16`（部分型号回退 `cmd=0x51`）。实现在 `protocol.rs` 的 `aula_command_request` / `aula_command_battery` 与 `vendor/aula.rs`，真机验证探针在 `examples/probe_aula.rs`；应答宽度（Windows 集合内是否带 report-id 前缀）待真机确认，两种帧长都已接受。
+
+**未收录平台**：`38A6`（30 条键盘全部有线：FFB0:0001 ×22、FF68:0061 ×7、FF00:0001 ×1，按规则只入附录 B）、`372E`（12 条，FF60:0061，与 ATK 的 BYKB 键盘方案同源）、`320F`（20 条鼠标，FF1C:0092，`22BA` 为无线接收器）、`2E3C`（FF1B:0091 有线键盘）、`1CA2/1CA5`（FFA0）、`384C`（FFA8）、`6D66`（FF60）、`B6A4`/`A8A4`/`A8A5`（FF01，AULA L3 耳机线）、`258A` 有线键盘线（见附录 B）。各家帧格式均未分析，列入附录 B 备查。
+
+**3554×FF02:0002 鼠标线（F5D5 无线接收器、F511/FB36/F515/F517/FB35 有线）**：与键盘接收器同 VID 同接口但 deviceType 为鼠标，帧兼容性未经证实——KZZI 适配器的 PID 锁不放开；待真机帧捕获后再评估，现记附录 B。
+
+**主进程混淆教训**：javascript-obfuscator 输出中变量名（`_0x25af86`）会伪造成 VID 常量的假象，统计 `0x25af` 之类模式必然污染；字段提取必须以对象字面量的字段名（`'pId':`、`'usagePage':`）为锚，并以条目边界（`'pName'` 分隔）做上下文限定，否则相邻条目互相串扰。webcrack 可解 javascript-obfuscator 的字符串数组，但设备表条目散布在未反混淆的主 bundle 中时，按条目窗口提取比依赖反混淆更可靠。
+
 ### 7.6 泥炭 SOUNDPEATS（蓝牙音频，BTHENUM 系统路径）
 
 来源：Windows 蓝牙栈行为验证（BTHENUM 枚举 + DEVPKEY 属性），SOUNDPEATS Space 真机实测；无需厂商驱动——经典蓝牙音频设备的电量由 Windows 经 HFP/AVRCP 收取，落在免提服务节点上。
@@ -130,3 +144,86 @@
 
 **写语义的 sub_id 偏移必须真机核验**：HID++ 长寄存器读是 0x83 而非 0x82（Solaar 的 `0x8100 | 0x2B5` 中，长寄存器值的 0x200 位使 0x81 进位为 0x83；0x82 是长写）。初版把长读当 0x82 发上了真机——接收器对该写入静默忽略，配对未受影响，但这是扫描路径上真实的写操作，与"扫描零寄存器写入"红线冲突。规则：任何新寄存器路径先以探针在真机上确认应答回显，再进适配器；混淆代码中的数字常量（含字符串数组解码残留）不能单独作为字段依据，必须以字段名为锚交叉验证。
 
+## 附录 A：KZZI 258A 有线型号表（已识别档）
+
+来源：驱动 Cfg.ini 明文全表，Psd 映射经复查抽查验证。全部为有线本体 PID，接收器形态以 3554:FA09 / 05AC:024F 枚举（已被现有适配覆盖），按第 3 节规则不进 matcher。代际：旧代无 Psd，新代（00CF 起）带 Psd 档案；标注沿用厂商 DevName 原文。
+
+| PID | 型号 | 代 | 标注 |
+| --- | --- | --- | --- |
+| 0049 | KZZI-G68 Keyboard | 旧 | |
+| 004A | KZZI-61RGB Wired Keyboard | 旧 | Wired |
+| 004B | KZZI-100RGB Wireless Keyboard | 旧 | Wireless |
+| 004C | KZZI-87RGB Keyboard | 旧 | |
+| 004D | KZZI-71RGB Wired Keyboard | 旧 | Wired |
+| 004F | KZZI-G87RGB Wired Keyboard | 旧 | Wired |
+| 0055 | KZZI-61 Keyboard | 旧 | |
+| 0056 | KZZI-100RGB Keyboard | 旧 | |
+| 0059 | KZZI-84RGB Keyboard | 旧 | |
+| 005A | KZZI-71RGB Keyboard | 旧 | |
+| 005B | KZZI-987RGB | 旧 | |
+| 005C | KZZI-G68RGB-UK Keyboard | 旧 | |
+| 005D | KZZI-857 Keyboard | 旧 | |
+| 005E | KZZI68RGB Bluetooth Dual Mode | 旧 | 蓝牙双模 |
+| 0064 | KZZI-68RGB Wired Keyboard | 旧 | Wired |
+| 0065 | KZZI-61RGB ISO Return Keyboard | 旧 | |
+| 0067 | KZZI-100PRO Keyboard | 旧 | |
+| 0068 | KZZI-987RGB Wired Keyboard | 旧 | Wired |
+| 0069 | KZZI-71RGB Wireless | 旧 | Wireless |
+| 006F | KZZI-68Plus Keyboard | 旧 | |
+| 0070 | KZZI-K980 RGB Keyboard | 旧 | |
+| 0075 | KZZI-G68RGB ISO Return Keyboard | 旧 | |
+| 0078 | KZZI-87 Keyboard | 旧 | |
+| 0079 | KZZI-68Pro Keyboard | 旧 | |
+| 007A | KZZI-61 RGB Bluetooth Dual Mode | 旧 | 蓝牙双模 |
+| 007C | KZZI-87T RGBWired Keyboard | 旧 | Wired |
+| 007D | KZZI-G87RGB Wired Keyboard | 旧 | Wired |
+| 0089 | KZZI-96 RGB Keyboard | 旧 | |
+| 008C | KZZI-61RGB ISO ReturnWired | 旧 | Wired |
+| 00A2 | KZZI-68RGB Wired Keyboard | 旧 | Wired |
+| 00AA | KZZI-100RGB Keyboard | 旧 | |
+| 00C6 | KZZI-K61 RGB Keyboard | 旧 | |
+| 00CF | Kzzi-K75 RGB | 新 | |
+| 0108 | Kzzi-K68 | 新 | |
+| 0112 | Kzzi-K75 RGB key | 新 | |
+| 0114 | Kzzi-K84 | 新 | |
+| 0149 | Kzzi-K75Pro | 新 | |
+| 0160 | Kzzi-Z98 | 新 | |
+| 017D | Kzzi-K20RGB | 新 | |
+| 0186 | Kzzi-K68Pro | 新 | |
+| 0195 | Kzzi-K98 | 新 | |
+| 01AA | Kzzi-K75Pro | 新 | |
+| 01AE | Kzzi-K87 | 新 | |
+| 01B0 | KZZI-K75RGB Lite | 新 | |
+| 01B2 | Kzzi-K21 | 新（无 Fw 键） | |
+| 01B6 | Kzzi-i75 RGB | 新 | |
+| 01C8 | Kzzi-K98Pro | 异常（缺 Psd） | |
+| 01D5 | Kzzi-K87MAX | 新 | |
+| 01DA | Kzzi-K87Pro | 异常（缺 Psd） | |
+| 024D | Kzzi-K75V2Pro | 异常（缺 Psd） | |
+| 0253 | Kzzi-K75V2 | 新 | |
+| 0260 | Kzzi-Z75 | 新 | |
+| 027D | Kzzi K98V2 | 新 | |
+| 029B | Kzzi-i98 | 新 | |
+| 029F | Kzzi-i20 | 新 | |
+| 02E2 | Kzzi-i98 | 新 | |
+
+## 附录 B：狼蛛 AULA 未收录平台与型号（已识别档）
+
+来源同 7.5（Aula Hub 2.2.3 设备表静态提取，共 156 条）。全部不进 matcher：帧格式未分析或为有线协议。3554:FA09 上的无线键盘（F75 / F87Pro / F99，另有一条 F87 FF00:0001 人格）已被现有 KZZI/Compx 适配覆盖，C45 无线 Dongle 已按 7.5 实现待真机验收，均不在此列。
+
+**有线键盘（258A 通用 VID，FF00:0001）**：F75、F87、F87Pro、F99 的有线形态，PID 以 0x10C 为主（另有 0x001、0x002 条目）；表内型号名经字符串解码，与 PID 的逐条对应未核验。
+
+**3554×FF02:0002 的鼠标线（deviceType=鼠标，与键盘接收器同接口不同型号）**：F511（有线）、F5D5（无线接收器）、FB36（有线）、FB35（无线）、F515（有线）、F517（有线）；帧兼容性未证实，放开 KZZI 适配器 PID 锁前需真机帧捕获。
+
+**其余 OEM 平台（无型号级解码）**：
+
+| VID | 条目数 | Usage Page | 备注 |
+| --- | --- | --- | --- |
+| 38A6 | 30 | FFB0:0001 ×22、FF68:0061 ×7、FF00:0001 ×1 | 全部有线键盘；PID：28D0/28D1/28D2/28DC/28DD/28DF/28E0/28E1/28F0/28F1/28F2/2902/2903/2904/2909/290A/272C/272D/272E/2730/2731/2767（FFB0），2722/2723/2724/2729/2742/2756/2908（FF68），291A（FF00） |
+| 320F | 20 | FF1C:0092 | 鼠标平台；22B7/22B8 有线，22BA 无线接收器 |
+| 372E | 12 | FF60:0061 | 与 ATK 的 BYKB 键盘方案同源；106C 等含无线键盘 |
+| 2E3C | 3 | FF1B:0091 | 有线键盘 C365 |
+| 1CA2 / 1CA5 | 6 | FFA0:0001 | |
+| 384C | 3 | FFA8 | |
+| 6D66 | 1 | FF60:0061 | 8572 无线键盘 |
+| B6A4 / A8A4 / A8A5 | 5 | FF01 | AULA L3 耳机线 |

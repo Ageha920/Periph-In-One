@@ -200,6 +200,9 @@ pub fn kzzi_model_name(psd: &[u8]) -> Option<&'static str> {
         [3, 0, 0, 0, 0, 224] => "Kzzi-K20RGB",
         [3, 0, 0, 0, 0, 252] => "Kzzi-K68Pro",
         [3, 0, 0, 0, 1, 10] => "Kzzi-K98",
+        // AULA F87 Pro on the same Compx receiver family; signature measured
+        // from the device itself (identity request 0x05).
+        [3, 0, 0, 0, 1, 11] => "AULA F87 Pro",
         [3, 0, 0, 0, 1, 52] => "Kzzi-K87",
         [3, 0, 0, 0, 1, 68] => "KZZI-K75RGB Lite",
         [3, 0, 0, 0, 1, 104] => "Kzzi-i75 RGB",
@@ -543,4 +546,61 @@ pub fn hidpp_connection_notification(report: &[u8]) -> Option<(u8, bool, u16)> {
             u16::from_be_bytes([report[6], report[5]]),
         )
     })
+}
+
+// Aula command protocol: the 32-byte vendor frames Aula Hub 2.2.3 exchanges
+// with its SDK-channel keyboards (usage page FF60/FF68/FF80 collections on
+// VID 0x0C45, e.g. the F87ProV2-series dongles). Layout and the battery
+// exchange come from the deobfuscated renderer SDK (encodeReadKeyboardData-
+// Command / decodeReadKeyboardDataResponse): [0] = cmd, [1] = mode, [6..8] =
+// CRC-16/CCITT-FALSE over all 32 bytes with those two zeroed, stored low
+// byte first. Replies echo cmd/mode, carry a status byte at [2] that must be
+// 0, and the vendor code never checks their CRC — neither do we.
+pub const AULA_CMD_BATTERY: u8 = 0x11;
+pub const AULA_CMD_BATTERY_ALT: u8 = 0x51;
+pub const AULA_MODE_BATTERY: u8 = 0x16;
+
+/// CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF, no reflection); check value
+/// for "123456789" is 0x29B1.
+pub fn aula_crc16(bytes: &[u8]) -> u16 {
+    let mut crc: u16 = 0xffff;
+    for &byte in bytes {
+        crc ^= u16::from(byte) << 8;
+        for _ in 0..8 {
+            crc = if crc & 0x8000 != 0 {
+                (crc << 1) ^ 0x1021
+            } else {
+                crc << 1
+            };
+        }
+    }
+    crc
+}
+
+/// One 32-byte command frame; the CRC slot sits zeroed inside the sum.
+pub fn aula_command_request(cmd: u8, mode: u8) -> [u8; 32] {
+    let mut frame = [0u8; 32];
+    frame[0] = cmd;
+    frame[1] = mode;
+    let crc = aula_crc16(&frame);
+    frame[6] = crc as u8;
+    frame[7] = (crc >> 8) as u8;
+    frame
+}
+
+/// The battery reply for mode 22: level at [8], charging flag at [9]. The
+/// hub parses both as decimal strings; 0 is not a level it ever acts on, so
+/// the same 1..=100 rule as the KZZI family applies. Windows reads carry a
+/// report-id prefix (33 bytes) that bare frames lack (32 bytes).
+pub fn aula_command_battery(report: &[u8], cmd: u8) -> Option<(u8, u8)> {
+    let frame: &[u8] = match report.len() {
+        33 => &report[1..33],
+        32 => report,
+        _ => return None,
+    };
+    if frame[0] != cmd || frame[1] != AULA_MODE_BATTERY || frame[2] != 0 {
+        return None;
+    }
+    let (level, state) = (frame[8], frame[9]);
+    ((1..=100).contains(&level)).then_some((level, state))
 }

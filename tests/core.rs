@@ -178,6 +178,8 @@ fn kzzi_identity_reply_yields_the_model_signature() {
         Some("Kzzi-K75 RGB key")
     );
     assert_eq!(kzzi_model_name(&[2, 0, 0, 0, 0, 54]), Some("Kzzi-K75 RGB"));
+    // AULA F87 Pro signature measured from the device (identity 0x05 reply).
+    assert_eq!(kzzi_model_name(&[3, 0, 0, 0, 1, 11]), Some("AULA F87 Pro"));
     assert_eq!(kzzi_model_name(&[9, 9, 9, 9, 9, 9]), None);
     let mut corrupt = reply;
     corrupt[19] ^= 1;
@@ -816,4 +818,57 @@ fn hidpp_arrival_notification_reports_slot_link_and_wpid() {
         hidpp_connection_notification(&[0x10, 0x01, 0x40, 0x0c, 0, 0, 0]),
         None
     );
+}
+
+#[test]
+fn aula_command_frames_carry_the_ccitt_crc() {
+    // CRC-16/CCITT-FALSE check value for "123456789" is 0x29B1.
+    assert_eq!(aula_crc16(b"123456789"), 0x29b1);
+    // Battery request frames from the vendor SDK: cmd 0x11 (0x51 fallback),
+    // mode 0x16, CRC low byte first at [6..8] over the zeroed frame.
+    let request = aula_command_request(AULA_CMD_BATTERY, AULA_MODE_BATTERY);
+    assert_eq!(
+        &request[..8],
+        &[0x11, 0x16, 0x00, 0x00, 0x00, 0x00, 0xc2, 0x1b]
+    );
+    let fallback = aula_command_request(AULA_CMD_BATTERY_ALT, AULA_MODE_BATTERY);
+    assert_eq!(
+        &fallback[..8],
+        &[0x51, 0x16, 0x00, 0x00, 0x00, 0x00, 0xb5, 0x38]
+    );
+}
+
+#[test]
+fn aula_command_battery_reads_level_and_charging_state() {
+    // A Windows read carries the report-id prefix: [0]=0, frame at 1..33,
+    // level at frame[8], charging flag at frame[9].
+    let mut reply = [0u8; 33];
+    reply[1] = AULA_CMD_BATTERY;
+    reply[2] = AULA_MODE_BATTERY;
+    reply[9] = 73;
+    reply[10] = 1;
+    assert_eq!(
+        aula_command_battery(&reply, AULA_CMD_BATTERY),
+        Some((73, 1))
+    );
+    // A bare 32-byte frame parses the same way.
+    let mut bare = [0u8; 32];
+    bare[0] = AULA_CMD_BATTERY;
+    bare[1] = AULA_MODE_BATTERY;
+    bare[7] = 5;
+    bare[8] = 100;
+    assert_eq!(
+        aula_command_battery(&bare, AULA_CMD_BATTERY),
+        Some((100, 0))
+    );
+    // Wrong echo, non-zero status, short frames and level 0 are rejected.
+    assert_eq!(aula_command_battery(&reply, AULA_CMD_BATTERY_ALT), None);
+    let mut bad_status = reply;
+    bad_status[3] = 1;
+    assert_eq!(aula_command_battery(&bad_status, AULA_CMD_BATTERY), None);
+    let mut empty = reply;
+    empty[9] = 0;
+    assert_eq!(aula_command_battery(&empty, AULA_CMD_BATTERY), None);
+    assert_eq!(aula_command_battery(&reply[..32], AULA_CMD_BATTERY), None);
+    assert_eq!(aula_command_battery(&reply[..20], AULA_CMD_BATTERY), None);
 }

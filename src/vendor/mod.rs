@@ -13,6 +13,7 @@
 
 mod atk;
 mod atk_v2;
+mod aula;
 mod bigbigwon;
 mod darkrim;
 mod kzzi;
@@ -22,6 +23,7 @@ use hidapi::{DeviceInfo, HidApi};
 
 pub use atk::AtkMouse;
 pub use atk_v2::AtkV2Mouse;
+pub use aula::AulaCommandKeyboard;
 pub use bigbigwon::BigbigwonGamepad;
 pub use darkrim::DarkrimHeadset;
 pub use kzzi::KzziKeyboard;
@@ -100,4 +102,5 @@ pub const ADAPTERS: &[&dyn VendorAdapter] = &[
     &KzziKeyboard,
     &BigbigwonGamepad,
     &LogitechReceiver,
+    &AulaCommandKeyboard,
 ];

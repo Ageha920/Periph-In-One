@@ -11,4 +11,6 @@ __pycache__/
 /scripts/*
 !/scripts/build-windows.ps1
 !/scripts/package.ps1
+# 本地驱动逆向研究材料（厂商安装包/提取产物），永不入库
+/.research/
 
