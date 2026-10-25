@@ -597,6 +597,142 @@ fn different_uids_stay_separate_even_on_matching_reports() {
 }
 
 #[test]
+fn hidpp_ping_frames_match_only_the_original_device_reply() {
+    let request = hidpp_ping(1);
+    assert_eq!(
+        &request[..8],
+        &[
+            HIDPP_LONG,
+            0x01,
+            0x00,
+            0x10 | HIDPP_SOFTWARE_ID,
+            0,
+            0,
+            0x42,
+            0
+        ]
+    );
+    // Captured LIGHTSPEED reply: long frame, protocol 4.2, echoed mark.
+    let reply = [HIDPP_LONG, 0x01, 0x00, 0x10 | HIDPP_SOFTWARE_ID, 4, 2, 0x42];
+    assert_eq!(hidpp_ping_reply(&reply, 1), Some((4, 2)));
+    // Another device's reply, a truncated frame and a notification
+    // (software id 0) must never look like a ping answer.
+    assert_eq!(hidpp_ping_reply(&reply, 2), None);
+    assert_eq!(hidpp_ping_reply(&reply[..6], 1), None);
+    let notification = [HIDPP_LONG, 0x01, 0x00, 0x10, 4, 2, 0x42];
+    assert_eq!(hidpp_ping_reply(&notification, 1), None);
+}
+
+#[test]
+fn hidpp_get_feature_index_requires_an_explicit_reply() {
+    let request = hidpp_get_feature(1, HIDPP_FEATURE_UNIFIED_BATTERY);
+    assert_eq!(
+        &request[..6],
+        &[HIDPP_LONG, 0x01, 0x00, HIDPP_SOFTWARE_ID, 0x10, 0x04]
+    );
+    let mut reply = [HIDPP_LONG, 0x01, 0x00, HIDPP_SOFTWARE_ID, 0x07, 0, 0];
+    assert_eq!(hidpp_feature_index(&reply, 1), Some(0x07));
+    // An unsupported feature reports index 0, not a failure.
+    reply[4] = 0;
+    assert_eq!(hidpp_feature_index(&reply, 1), None);
+    assert_eq!(hidpp_feature_index(&reply[..5], 1), None);
+}
+
+#[test]
+fn hidpp_unified_battery_prefers_soc_and_falls_back_to_approximation() {
+    let address = (1 << 4) | HIDPP_SOFTWARE_ID;
+    let reply = [0x10, 0x01, 0x07, address, 57, 4, 0];
+    assert_eq!(hidpp_unified_battery(&reply, 1, 0x07), Some(57));
+    // SoC 0 defers to the level approximation, exactly like Solaar.
+    assert_eq!(
+        hidpp_unified_battery(&[0x10, 0x01, 0x07, address, 0, 8, 0], 1, 0x07),
+        Some(90)
+    );
+    assert_eq!(
+        hidpp_unified_battery(&[0x10, 0x01, 0x07, address, 0, 4, 0], 1, 0x07),
+        Some(50)
+    );
+    assert_eq!(
+        hidpp_unified_battery(&[0x10, 0x01, 0x07, address, 0, 2, 0], 1, 0x07),
+        Some(20)
+    );
+    assert_eq!(
+        hidpp_unified_battery(&[0x10, 0x01, 0x07, address, 0, 1, 0], 1, 0x07),
+        Some(5)
+    );
+    // An empty approximation is no reading, and out-of-range data is dropped.
+    assert_eq!(
+        hidpp_unified_battery(&[0x10, 0x01, 0x07, address, 0, 0, 0], 1, 0x07),
+        None
+    );
+    assert_eq!(
+        hidpp_unified_battery(&[0x10, 0x01, 0x07, address, 101, 0, 0], 1, 0x07),
+        None
+    );
+    // Wrong device, wrong feature index, wrong function, truncated frame.
+    assert_eq!(hidpp_unified_battery(&reply, 2, 0x07), None);
+    assert_eq!(hidpp_unified_battery(&reply, 1, 0x08), None);
+    assert_eq!(
+        hidpp_unified_battery(&[0x10, 0x01, 0x07, HIDPP_SOFTWARE_ID, 57, 4, 0], 1, 0x07),
+        None
+    );
+    assert_eq!(hidpp_unified_battery(&reply[..5], 1, 0x07), None);
+}
+
+#[test]
+fn hidpp_battery_status_treats_zero_level_as_unknown() {
+    let reply = [0x10, 0x01, 0x05, HIDPP_SOFTWARE_ID, 55, 60, 1];
+    assert_eq!(hidpp_battery_status(&reply, 1, 0x05), Some(55));
+    assert_eq!(
+        hidpp_battery_status(&[0x10, 0x01, 0x05, HIDPP_SOFTWARE_ID, 0, 0, 0], 1, 0x05),
+        None
+    );
+    assert_eq!(hidpp_battery_status(&reply, 2, 0x05), None);
+    assert_eq!(hidpp_battery_status(&[], 1, 0x05), None);
+}
+
+#[test]
+fn hidpp_name_chunks_are_returned_as_raw_bytes() {
+    let request = hidpp_feature_call1(1, 0x07, 1, 3);
+    assert_eq!(
+        &request[..5],
+        &[HIDPP_LONG, 0x01, 0x07, (1 << 4) | HIDPP_SOFTWARE_ID, 3]
+    );
+    // Long-frame replies carry the chunk straight after the echo.
+    let reply = [
+        HIDPP_LONG,
+        0x01,
+        0x07,
+        (1 << 4) | HIDPP_SOFTWARE_ID,
+        b'G',
+        b'5',
+        b'0',
+    ];
+    assert_eq!(hidpp_name_text(&reply, 1, 0x07), Some(&b"G50"[..]));
+    assert_eq!(hidpp_name_text(&reply, 1, 0x08), None);
+    assert_eq!(hidpp_name_text(&reply[..6], 1, 0x07), None);
+    let length = [HIDPP_LONG, 0x01, 0x07, HIDPP_SOFTWARE_ID, 15, 0, 0];
+    assert_eq!(hidpp_name_length(&length, 1, 0x07), Some(15));
+    // Zero and oversized lengths are rejected so the chunk loop is bounded.
+    assert_eq!(
+        hidpp_name_length(
+            &[HIDPP_LONG, 0x01, 0x07, HIDPP_SOFTWARE_ID, 0, 0, 0],
+            1,
+            0x07
+        ),
+        None
+    );
+    assert_eq!(
+        hidpp_name_length(
+            &[HIDPP_LONG, 0x01, 0x07, HIDPP_SOFTWARE_ID, 33, 0, 0],
+            1,
+            0x07
+        ),
+        None
+    );
+}
+
+#[test]
 fn bluetooth_headset_identity_is_stable_across_scans() {
     fn bt_headset(battery: Option<u8>) -> Reading {
         Reading {
@@ -630,4 +766,54 @@ fn bluetooth_headset_identity_is_stable_across_scans() {
     assert_eq!(offline.len(), 1);
     assert!(!offline[0].present);
     assert_eq!(offline[0].saved.battery, Some(80));
+}
+
+#[test]
+fn hidpp_receiver_registers_follow_the_rap_layout() {
+    let read = hidpp_get_register(0xff, HIDPP_REGISTER_NOTIFICATIONS);
+    assert_eq!(&read[..], &[0x10, 0xff, 0x81, 0x00, 0, 0, 0]);
+    let write = hidpp_set_register(0xff, HIDPP_REGISTER_CONNECTIONS, [0x02, 0, 0]);
+    assert_eq!(&write[..], &[0x10, 0xff, 0x80, 0x02, 0x02, 0, 0]);
+    // A read reply echoes sub id and register before the three data bytes.
+    let reply = [0x10, 0xff, 0x81, 0x00, 0x00, 0x01, 0x00];
+    assert_eq!(
+        hidpp_get_register_reply(&reply, 0xff, HIDPP_REGISTER_NOTIFICATIONS),
+        Some([0x00, 0x01, 0x00])
+    );
+    assert_eq!(hidpp_pairing_count([0x00, 0x01, 0x00]), 1);
+    // Another register or an error frame never satisfies the matcher.
+    assert_eq!(
+        hidpp_get_register_reply(&reply, 0xff, HIDPP_REGISTER_CONNECTIONS),
+        None
+    );
+    assert_eq!(
+        hidpp_get_register_reply(&[0x10, 0xff, 0x8f, 0x00, 0x01, 0x09, 0x00], 0xff, 0x00),
+        None
+    );
+    assert!(hidpp_set_register_ok(
+        &[0x10, 0xff, 0x80, 0x02, 0x00, 0x00, 0x00],
+        0xff,
+        0x02
+    ));
+}
+
+#[test]
+fn hidpp_arrival_notification_reports_slot_link_and_wpid() {
+    // Captured from a LIGHTSPEED receiver: slot 1, mouse, G502 wpid 0x407F.
+    let online = [0x10, 0x01, 0x41, 0x0c, 0x22, 0x7f, 0x40];
+    assert_eq!(
+        hidpp_connection_notification(&online),
+        Some((0x01, true, 0x407f))
+    );
+    // Device-info bit 6 set: the link is not established.
+    let offline = [0x10, 0x01, 0x41, 0x0c, 0x62, 0x7f, 0x40];
+    assert_eq!(
+        hidpp_connection_notification(&offline),
+        Some((0x01, false, 0x407f))
+    );
+    assert_eq!(hidpp_connection_notification(&offline[..6]), None);
+    assert_eq!(
+        hidpp_connection_notification(&[0x10, 0x01, 0x40, 0x0c, 0, 0, 0]),
+        None
+    );
 }

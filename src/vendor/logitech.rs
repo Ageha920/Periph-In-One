@@ -1,0 +1,329 @@
+//! Logitech Unifying-family receivers (Lightspeed, Unifying, Bolt) over
+//! HID++. The pairing count comes from a read of the connections register on
+//! the FF00/0x01 collection — it counts paired slots, so a paired but asleep
+//! mouse is still swept — and every slot is then probed with a long-frame
+//! ping through the FF00/0x02 collection, the only path these receivers
+//! relay device HID++ through. The scan performs no register writes, so it
+//! cannot disturb a working link; the ping itself is the liveness test.
+//!
+//! The receiver pairing registers (0xB5 long reads) are deliberately not
+//! touched: on the Lightspeed C539 the pairing sub-registers never answer at
+//! all, and an idle receiver answers the ones that do exist seconds late —
+//! both observed on hardware (examples/probe_logitech.rs). Slot kinds and
+//! unit serials therefore stay unknown; readings fall back to the port id.
+//! HID++ 1.0-only devices answer long pings with an error frame and are left
+//! unsupported — Windows exposes the two report widths as separate
+//! collections and relaying short device frames through them is not
+//! verified.
+
+use crate::{
+    devices::{container_id, drain, open_pair, send},
+    protocol,
+    vendor::{Capabilities, Outcome, VendorAdapter},
+};
+use hidapi::{DeviceInfo, HidApi, HidDevice};
+use std::time::{Duration, Instant};
+
+pub struct LogitechReceiver;
+
+/// Receiver personalities from Solaar's receiver table; all speak the same
+/// HID++ device tunnel with the same register set.
+#[derive(Clone, Copy)]
+enum Receiver {
+    Lightspeed,
+    Unifying,
+    Bolt,
+}
+
+impl Receiver {
+    fn from_pid(pid: u16) -> Option<Self> {
+        match pid {
+            // Lightspeed receivers: C539 measured on hardware; siblings per
+            // Solaar's KNOWN_RECEIVERS (usb interface 2, same layout).
+            0xc539 | 0xc53a | 0xc53d | 0xc53f | 0xc541 | 0xc545 | 0xc547 | 0xc54d => {
+                Some(Self::Lightspeed)
+            }
+            0xc52b | 0xc532 => Some(Self::Unifying),
+            0xc548 => Some(Self::Bolt),
+            _ => None,
+        }
+    }
+}
+
+impl VendorAdapter for LogitechReceiver {
+    fn matches(&self, info: &DeviceInfo) -> bool {
+        // The two FF00 collections carry the two report widths — registers
+        // and arrival notifications on 0x01, device-tunnelled HID++ on 0x02.
+        // The paired devices ride on the receiver's own identity.
+        info.vendor_id() == 0x046d
+            && info.usage_page() == 0xff00
+            && matches!(info.usage(), 0x01 | 0x02)
+            && Receiver::from_pid(info.product_id()).is_some()
+    }
+
+    fn kind(&self) -> &'static str {
+        // The receiver does not name the device behind a slot (the pairing
+        // registers that would are out of scope, see the module notes), so
+        // the product line default stands.
+        "mouse"
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities::BATTERY
+    }
+
+    fn read(&self, api: &HidApi, info: &DeviceInfo) -> Outcome {
+        self.read_all(api, info)
+            .into_iter()
+            .next()
+            .unwrap_or_default()
+    }
+
+    fn read_all(&self, api: &HidApi, info: &DeviceInfo) -> Vec<Outcome> {
+        match probe(api, info) {
+            Ok(outcomes) if !outcomes.is_empty() => outcomes,
+            // The connections register counts paired slots, so pairings the
+            // pings cannot reach mean a device that is off or out of range;
+            // an empty probe leaves the receiver itself unaccounted for.
+            Ok(_) => vec![Outcome {
+                message: "设备未响应，请确认设备已开机".into(),
+                ..Outcome::default()
+            }],
+            Err(_) => vec![Outcome {
+                message: "读取失败，请重新连接设备后刷新".into(),
+                ..Outcome::default()
+            }],
+        }
+    }
+}
+
+fn probe(api: &HidApi, info: &DeviceInfo) -> Result<Vec<Outcome>, String> {
+    // The receiver exposes two collections of the same page, so the register
+    // and tunnel interfaces are re-matched from the device list and grouped
+    // by container — one scan result set per physical receiver.
+    Receiver::from_pid(info.product_id()).ok_or("未知罗技接收器")?;
+    let container = container_id(info);
+    let interfaces: Vec<DeviceInfo> = api
+        .device_list()
+        .filter(|d| LogitechReceiver.matches(d) && container_id(d) == container)
+        .cloned()
+        .collect();
+    let register_info = interfaces
+        .iter()
+        .find(|info| info.usage() == 0x01)
+        .ok_or("接收器缺少寄存器接口")?;
+    let tunnel_info = interfaces
+        .iter()
+        .find(|info| info.usage() == 0x02)
+        .ok_or("接收器缺少设备通道接口")?;
+    let (reader, writer) = open_pair(api, register_info)?;
+    let (tunnel_reader, tunnel_writer) = open_pair(api, tunnel_info)?;
+    let mut buffer = [0; 256];
+    let Some(paired) = hidpp_register(
+        &reader,
+        &writer,
+        &mut buffer,
+        protocol::HIDPP_REGISTER_CONNECTIONS,
+        None,
+    )?
+    .map(protocol::hidpp_pairing_count) else {
+        return Ok(Vec::new());
+    };
+    if paired == 0 {
+        return Ok(vec![Outcome {
+            message: "接收器上没有已配对的设备".into(),
+            ..Outcome::default()
+        }]);
+    }
+    let mut outcomes = Vec::new();
+    for slot in 1..=paired.clamp(1, 6) {
+        drain(&tunnel_reader);
+        send(&tunnel_writer, &protocol::hidpp_ping(slot))?;
+        let online = read_matching(
+            &tunnel_reader,
+            &mut buffer,
+            Duration::from_millis(400),
+            |report| protocol::hidpp_ping_reply(report, slot),
+        )?;
+        if online.is_none() {
+            continue;
+        }
+        let battery = hidpp_battery(&tunnel_reader, &tunnel_writer, &mut buffer, slot)?;
+        let name =
+            hidpp_name(&tunnel_reader, &tunnel_writer, &mut buffer, slot).unwrap_or_default();
+        outcomes.push(Outcome {
+            battery,
+            no_battery: battery.is_none(),
+            hardware_name: (!name.is_empty()).then_some(name),
+            slot: Some(slot),
+            message: "已连接".into(),
+            ..Outcome::default()
+        });
+    }
+    Ok(outcomes)
+}
+
+/// One bounded read window; non-matching input (notifications, error frames,
+/// other devices' traffic) is consumed and skipped.
+fn read_matching<T>(
+    reader: &HidDevice,
+    buffer: &mut [u8; 256],
+    timeout: Duration,
+    matcher: impl Fn(&[u8]) -> Option<T>,
+) -> Result<Option<T>, String> {
+    let end = Instant::now() + timeout;
+    while Instant::now() < end {
+        let n = reader
+            .read_timeout(buffer, 100)
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            continue;
+        }
+        if let Some(value) = matcher(&buffer[..n]) {
+            return Ok(Some(value));
+        }
+    }
+    Ok(None)
+}
+
+/// One HID++ 1.0 receiver register exchange; `values` selects a write
+/// (0x80) over a read (0x81). `None` out means the receiver did not answer.
+/// 0x41 arrival notifications streamed in between are consumed and skipped.
+fn hidpp_register(
+    reader: &HidDevice,
+    writer: &HidDevice,
+    buffer: &mut [u8; 256],
+    register: u8,
+    values: Option<[u8; 3]>,
+) -> Result<Option<[u8; 3]>, String> {
+    let frame = match values {
+        Some(values) => protocol::hidpp_set_register(0xff, register, values),
+        None => protocol::hidpp_get_register(0xff, register),
+    };
+    drain(reader);
+    send(writer, &frame)?;
+    let end = Instant::now() + Duration::from_millis(400);
+    while Instant::now() < end {
+        let n = reader.read_timeout(buffer, 60).map_err(|e| e.to_string())?;
+        if n == 0 {
+            continue;
+        }
+        let matched = match values {
+            None => protocol::hidpp_get_register_reply(&buffer[..n], 0xff, register),
+            Some(_) => {
+                protocol::hidpp_set_register_ok(&buffer[..n], 0xff, register).then_some([0, 0, 0])
+            }
+        };
+        if let Some(reply) = matched {
+            return Ok(Some(reply));
+        }
+    }
+    Ok(None)
+}
+
+/// Unified Battery (0x1004), Battery Level Status (0x1000), then Battery
+/// Voltage (0x1001) — Solaar's preference order for HID++ 2.0 devices; the
+/// G502 Lightspeed only carries the voltage feature, whose millivolt reading
+/// is mapped to a percentage through the discharge curve.
+fn hidpp_battery(
+    reader: &HidDevice,
+    writer: &HidDevice,
+    buffer: &mut [u8; 256],
+    device: u8,
+) -> Result<Option<u8>, String> {
+    for (feature, function, parse) in [
+        (
+            protocol::HIDPP_FEATURE_UNIFIED_BATTERY,
+            1u8,
+            protocol::hidpp_unified_battery as fn(&[u8], u8, u8) -> Option<u8>,
+        ),
+        (
+            protocol::HIDPP_FEATURE_BATTERY_STATUS,
+            0u8,
+            protocol::hidpp_battery_status as fn(&[u8], u8, u8) -> Option<u8>,
+        ),
+        (
+            protocol::HIDPP_FEATURE_BATTERY_VOLTAGE,
+            0u8,
+            protocol::hidpp_voltage_battery_percent as fn(&[u8], u8, u8) -> Option<u8>,
+        ),
+    ] {
+        drain(reader);
+        send(writer, &protocol::hidpp_get_feature(device, feature))?;
+        let index = read_matching(reader, buffer, Duration::from_millis(400), |report| {
+            protocol::hidpp_feature_index(report, device)
+        })?;
+        let Some(index) = index else { continue };
+        drain(reader);
+        send(
+            writer,
+            &protocol::hidpp_feature_call(device, index, function),
+        )?;
+        let level = read_matching(reader, buffer, Duration::from_millis(400), |report| {
+            parse(report, device, index)
+        })?;
+        if level.is_some() {
+            return Ok(level);
+        }
+    }
+    Ok(None)
+}
+
+/// Device Name (0x0003): one length call plus fixed-size text chunks. A
+/// half-asleep device answers feature lookups inconsistently, so the lookup
+/// is retried and the result length- and printability-checked.
+fn hidpp_name(
+    reader: &HidDevice,
+    writer: &HidDevice,
+    buffer: &mut [u8; 256],
+    device: u8,
+) -> Option<String> {
+    let mut index = 0u8;
+    for _ in 0..2 {
+        drain(reader);
+        send(
+            writer,
+            &protocol::hidpp_get_feature(device, protocol::HIDPP_FEATURE_DEVICE_NAME),
+        )
+        .ok()?;
+        if let Ok(Some(found)) =
+            read_matching(reader, buffer, Duration::from_millis(400), |report| {
+                protocol::hidpp_feature_index(report, device)
+            })
+        {
+            index = found;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(150));
+    }
+    let index = (index != 0).then_some(index)?;
+    drain(reader);
+    send(writer, &protocol::hidpp_feature_call(device, index, 0)).ok()?;
+    let length = read_matching(reader, buffer, Duration::from_millis(400), |report| {
+        protocol::hidpp_name_length(report, device, index)
+    })
+    .ok()??;
+    let mut raw = Vec::with_capacity(length);
+    while raw.len() < length {
+        drain(reader);
+        send(
+            writer,
+            &protocol::hidpp_feature_call1(device, index, 1, raw.len() as u8),
+        )
+        .ok()?;
+        let chunk = read_matching(reader, buffer, Duration::from_millis(400), |report| {
+            protocol::hidpp_name_text(report, device, index).map(|bytes| bytes.to_vec())
+        })
+        .ok()??;
+        if chunk.is_empty() {
+            return None;
+        }
+        raw.extend_from_slice(&chunk);
+    }
+    let raw = &raw[..length];
+    if !raw.iter().all(|byte| (0x20..=0x7e).contains(byte)) {
+        return None;
+    }
+    let name = String::from_utf8_lossy(raw).trim().to_string();
+    (name.len() >= 4).then_some(name)
+}

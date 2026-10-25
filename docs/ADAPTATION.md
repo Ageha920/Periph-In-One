@@ -58,7 +58,7 @@
 
 ## 7. 范例
 
-三节均已随复查落位（2026-10-25）：7.1 五条 PASS 加一条表格污染清洗后采用，7.2 五条 PASS 一条修正后采用，7.3 七条全 PASS。
+三节均已随复查落位（2026-10-25）：7.1 五条 PASS 加一条表格污染清洗后采用，7.2 五条 PASS 一条修正后采用，7.3 七条全 PASS。7.4/7.6 为第二批，随罗技接收器家族扩展与蓝牙音频路径的复查写入。
 
 ### 7.1 ATK HUB（跨家族品牌）
 
@@ -106,6 +106,18 @@
 
 **复查锚点**：帧常量 0xad0404a5（04）、0xa3fa04a5（FA）、0x7cd304a5（D3）、0x197004a5（70）均为厂商预计算常量，与 8 位环绕累加互证；应答分发三层结构（入口 0x10024113、索引表 0x10024EB8、跳转表 0x10024E64）。
 
+### 7.4 罗技 Unifying 家族接收器（HID++）
+
+来源：Logitech 公开的 HID++ 1.0/2.0 协议文档；协议语义与 Solaar（pwr-Solaar/Solaar，GPL-2.0）交叉核对；放电曲线与 OpenLogi 文档互证。C539 + G502 LIGHTSPEED 真机实测，其余接收器 PID 取自 Solaar `base_usb.KNOWN_RECEIVERS`（Unifying/Bolt/Lightspeed 同为 USB interface 2 的 FF00 双集合布局），标已实现未实测。传输层怪癖以 `examples/probe_logitech.rs` 的真机探针为准（2026-10-25，G502 + C539）。
+
+**家族版图**：接收器三类人格——LIGHTSPEED `C539/C53A/C53D/C53F/C541/C545/C547/C54D`、Unifying `C52B/C532`、Bolt `C548`，全部以 Usage Page FF00 的两个集合承载两种报表宽度：0x01 集合收发 7 字节短帧（寄存器 0x81/0x80 与到达通知），0x02 集合收发 20 字节长帧（设备隧道）。真机确认 Windows 把两个集合暴露为两个 hidapi 设备，短帧写长集合与长帧写短集合都会被系统直接拒绝，因此寄存器走 0x01、设备帧走 0x02。
+
+**扫描路径**：连接数寄存器（短帧 0x81 0x02）应答的第二字节是**已配对**槽数——鼠标休眠时仍报 1（真机验证），逐槽长帧 Root.Ping 探活后对在线槽读 Unified Battery (0x1004) → Battery Level Status (0x1000) → Battery Voltage (0x1001)，与 Solaar 的优先顺序一致。G502 只带电压特性（毫伏 + 充电标志位），按 Solaar 同款单节锂电放电曲线插值换算百分比；全流程零寄存器写入。
+
+**多设备（一拖多）**：`VendorAdapter::read_all` 允许一次探测返回多条结果，Unifying 一拖六的每个在线槽位产出独立 `Outcome`，扫描层以 `物理口#槽位` 区分 physical_id（单设备接收器保持原物理口，避免历史身份漂移）。罗技的逐设备身份寄存器（0xB5 长读，Unifying 槽位 0x2N/0x3N、Bolt 0x5N，应答含类别 nibble 与整机序列号）**未纳入扫描**：C539 上配对子寄存器永不应答，接收器信息子寄存器应答延迟达秒级且跨轮乱序（均为真机观察），且长寄存器读的 sub_id 是 0x83（`0x8100 | 0x2B5` 的 0x200 位进位，0x82 是长写——初版实现误用 0x82 上了硬件，幸而 C539 对该寄存器无写入效果；此教训入 7.7）。帧格式记录于探针，待 Unifying/Bolt 真机再评估接入。
+
+**边界**：HID++ 1.0-only 设备（Unifying 早期键鼠）对长帧 Ping 以 0x8F 错误应答，不匹配即视为离槽，不做 1.0 寄存器电量回退（Windows 集合拆分下短设备帧路由未经验证）；槽位类别（键/鼠）在配对寄存器缺席时按产品线默认 mouse 显示，Unifying 上配键盘的用户可见此局限。
+
 ### 7.6 泥炭 SOUNDPEATS（蓝牙音频，BTHENUM 系统路径）
 
 来源：Windows 蓝牙栈行为验证（BTHENUM 枚举 + DEVPKEY 属性），SOUNDPEATS Space 真机实测；无需厂商驱动——经典蓝牙音频设备的电量由 Windows 经 HFP/AVRCP 收取，落在免提服务节点上。
@@ -114,65 +126,7 @@
 
 **边界**：只覆盖 Windows 已记录电量的经典音频设备；蓝牙 HID 外设（LE 触控板等）不走此路径。蓝牙设备无 HID 序列号，历史合并靠 MAC，跨适配器重配对不影响。
 
-## 附录 A：KZZI 258A 有线型号表（已识别档）
+### 7.7 复查教训（第二批新增）
 
-来源：驱动 Cfg.ini 明文全表，Psd 映射经复查抽查验证。全部为有线本体 PID，接收器形态以 3554:FA09 / 05AC:024F 枚举（已被现有适配覆盖），按第 3 节规则不进 matcher。代际：旧代无 Psd，新代（00CF 起）带 Psd 档案；标注沿用厂商 DevName 原文。
+**写语义的 sub_id 偏移必须真机核验**：HID++ 长寄存器读是 0x83 而非 0x82（Solaar 的 `0x8100 | 0x2B5` 中，长寄存器值的 0x200 位使 0x81 进位为 0x83；0x82 是长写）。初版把长读当 0x82 发上了真机——接收器对该写入静默忽略，配对未受影响，但这是扫描路径上真实的写操作，与"扫描零寄存器写入"红线冲突。规则：任何新寄存器路径先以探针在真机上确认应答回显，再进适配器；混淆代码中的数字常量（含字符串数组解码残留）不能单独作为字段依据，必须以字段名为锚交叉验证。
 
-| PID | 型号 | 代 | 标注 |
-| --- | --- | --- | --- |
-| 0049 | KZZI-G68 Keyboard | 旧 | |
-| 004A | KZZI-61RGB Wired Keyboard | 旧 | Wired |
-| 004B | KZZI-100RGB Wireless Keyboard | 旧 | Wireless |
-| 004C | KZZI-87RGB Keyboard | 旧 | |
-| 004D | KZZI-71RGB Wired Keyboard | 旧 | Wired |
-| 004F | KZZI-G87RGB Wired Keyboard | 旧 | Wired |
-| 0055 | KZZI-61 Keyboard | 旧 | |
-| 0056 | KZZI-100RGB Keyboard | 旧 | |
-| 0059 | KZZI-84RGB Keyboard | 旧 | |
-| 005A | KZZI-71RGB Keyboard | 旧 | |
-| 005B | KZZI-987RGB | 旧 | |
-| 005C | KZZI-G68RGB-UK Keyboard | 旧 | |
-| 005D | KZZI-857 Keyboard | 旧 | |
-| 005E | KZZI68RGB Bluetooth Dual Mode | 旧 | 蓝牙双模 |
-| 0064 | KZZI-68RGB Wired Keyboard | 旧 | Wired |
-| 0065 | KZZI-61RGB ISO Return Keyboard | 旧 | |
-| 0067 | KZZI-100PRO Keyboard | 旧 | |
-| 0068 | KZZI-987RGB Wired Keyboard | 旧 | Wired |
-| 0069 | KZZI-71RGB Wireless | 旧 | Wireless |
-| 006F | KZZI-68Plus Keyboard | 旧 | |
-| 0070 | KZZI-K980 RGB Keyboard | 旧 | |
-| 0075 | KZZI-G68RGB ISO Return Keyboard | 旧 | |
-| 0078 | KZZI-87 Keyboard | 旧 | |
-| 0079 | KZZI-68Pro Keyboard | 旧 | |
-| 007A | KZZI-61 RGB Bluetooth Dual Mode | 旧 | 蓝牙双模 |
-| 007C | KZZI-87T RGBWired Keyboard | 旧 | Wired |
-| 007D | KZZI-G87RGB Wired Keyboard | 旧 | Wired |
-| 0089 | KZZI-96 RGB Keyboard | 旧 | |
-| 008C | KZZI-61RGB ISO ReturnWired | 旧 | Wired |
-| 00A2 | KZZI-68RGB Wired Keyboard | 旧 | Wired |
-| 00AA | KZZI-100RGB Keyboard | 旧 | |
-| 00C6 | KZZI-K61 RGB Keyboard | 旧 | |
-| 00CF | Kzzi-K75 RGB | 新 | |
-| 0108 | Kzzi-K68 | 新 | |
-| 0112 | Kzzi-K75 RGB key | 新 | |
-| 0114 | Kzzi-K84 | 新 | |
-| 0149 | Kzzi-K75Pro | 新 | |
-| 0160 | Kzzi-Z98 | 新 | |
-| 017D | Kzzi-K20RGB | 新 | |
-| 0186 | Kzzi-K68Pro | 新 | |
-| 0195 | Kzzi-K98 | 新 | |
-| 01AA | Kzzi-K75Pro | 新 | |
-| 01AE | Kzzi-K87 | 新 | |
-| 01B0 | KZZI-K75RGB Lite | 新 | |
-| 01B2 | Kzzi-K21 | 新（无 Fw 键） | |
-| 01B6 | Kzzi-i75 RGB | 新 | |
-| 01C8 | Kzzi-K98Pro | 异常（缺 Psd） | |
-| 01D5 | Kzzi-K87MAX | 新 | |
-| 01DA | Kzzi-K87Pro | 异常（缺 Psd） | |
-| 024D | Kzzi-K75V2Pro | 异常（缺 Psd） | |
-| 0253 | Kzzi-K75V2 | 新 | |
-| 0260 | Kzzi-Z75 | 新 | |
-| 027D | Kzzi K98V2 | 新 | |
-| 029B | Kzzi-i98 | 新 | |
-| 029F | Kzzi-i20 | 新 | |
-| 02E2 | Kzzi-i98 | 新 | |

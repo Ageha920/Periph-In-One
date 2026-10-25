@@ -152,7 +152,7 @@ fn device_property(info: &DeviceInfo, key: &DEVPROPKEY, buffer: &mut [u8]) -> Op
 
 /// Windows groups all interfaces of a physical receiver using its ContainerId.
 /// This is an internal local identifier, never displayed as a hardware serial.
-fn container_id(info: &DeviceInfo) -> String {
+pub(crate) fn container_id(info: &DeviceInfo) -> String {
     let mut value = [0u8; 16];
     let read = device_property(info, &DEVPKEY_Device_ContainerId, &mut value).unwrap_or(0);
     if read == value.len() && value != [0; 16] {
@@ -446,21 +446,32 @@ pub fn scan() -> Result<Vec<Reading>, String> {
         let Some(adapter) = vendor::ADAPTERS.iter().find(|a| a.matches(info)) else {
             continue;
         };
-        let outcome = adapter.read(&api, info);
-        result.push(Reading {
-            physical_id: port_location(info),
-            kind: adapter.kind().into(),
-            hardware_name: outcome
-                .hardware_name
-                .unwrap_or_else(|| info.product_string().unwrap_or("未提供硬件名称").into()),
-            serial: raw_serial_number(info),
-            uid: outcome.uid,
-            vid: info.vendor_id(),
-            pid: info.product_id(),
-            battery: outcome.battery,
-            no_battery: outcome.no_battery,
-            message: outcome.message,
-        });
+        // One physical receiver can report several paired devices; only then
+        // do the readings carry slot marks, so single-device receivers keep
+        // their plain port id across scans.
+        let outcomes = adapter.read_all(&api, info);
+        let multi = outcomes.len() > 1;
+        for outcome in outcomes {
+            let mut physical_id = port_location(info);
+            if multi && let Some(slot) = outcome.slot {
+                physical_id.push('#');
+                physical_id.push_str(&slot.to_string());
+            }
+            result.push(Reading {
+                physical_id,
+                kind: adapter.kind().into(),
+                hardware_name: outcome
+                    .hardware_name
+                    .unwrap_or_else(|| info.product_string().unwrap_or("未提供硬件名称").into()),
+                serial: raw_serial_number(info),
+                uid: outcome.uid,
+                vid: info.vendor_id(),
+                pid: info.product_id(),
+                battery: outcome.battery,
+                no_battery: outcome.no_battery,
+                message: outcome.message,
+            });
+        }
     }
     result.extend(crate::bluetooth::audio_devices());
     result.sort_by_key(|r| {

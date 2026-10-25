@@ -59,9 +59,10 @@ Rust + Slint，使用软件渲染，无需 Python 或 WebView2 运行时。当�
 | --- | --- | --- |
 | ATK / VXE 鼠标（FF05 家族） | VID `373B`，Usage Page `FF05:0001`，89 个 PID（`1216` 实测，另有 `FF02` 回退接口） | `1216` 已有电量实测记录；其余 PID 取自 ATK HUB 设备表，已实现未实测 |
 | ATK V2 鼠标（FF04 家族） | VID `373B` / `3554`（Dragonfly），Usage Page `FF04:0002`，共 191 个 PID | 协议取自 ATK HUB 静态分析（feature report），已实现未实测 |
+| 罗技 Unifying 家族接收器（LIGHTSPEED / Unifying / Bolt） | VID `046D`，Usage Page `FF00` / `0x01` + `0x02`，HID++；LIGHTSPEED `C539`/`C53A`/`C53D`/`C53F`/`C541`/`C545`/`C547`/`C54D`，Unifying `C52B`/`C532`，Bolt `C548` | 读配对数后以长帧设备通道逐槽探测，一拖多接收器每个在线设备各占一条记录（与 Solaar、OpenLogi 同一协议族，扫描过程无寄存器写入）；G502 LIGHTSPEED 电量实测走 Battery Voltage (0x1001) 毫伏读数，按 Solaar 同款锂电放电曲线换算百分比，另支持 Unified Battery / Battery Level Status 设备；Unifying、Bolt 及其余 LIGHTSPEED 接收器为已实现未实测；仅支持 HID++ 2.0 设备，HID++ 1.0 时代的老设备不响应长帧 Ping；设备仅在被操作时保持链路，休眠或离线时提示确认开机 |
 | 蓝牙音频耳机（SOUNDPEATS Space、Redmi Buds 6 等经典音频设备） | 蓝牙音频设备（BTHENUM），系统连接标志 + 免提节点电量属性 | 只列出系统报告为已连接的设备；电量读取 Windows 已收到的 HFP 上报，与系统设置显示一致，已有真机电量实测记录；耳机未上报时显示 `—` |
 | DARKRIM SHADOW 耳机 | `3654:6901`，`FF02:0002` | 已实现协议与解析测试，待补当前版本真机验收 |
-| KZZI / Compx 键盘 | `3554:FA09`，`FF02:0002` | K75 身份识别已验证；该机固件不提供电量，显示为已连接与 `—`；其他型号依固件而定 |
+| KZZI / Compx 键盘（含狼蛛 AULA F87 Pro 等同方案接收器） | `3554:FA09`，`FF02:0002` | K75 身份识别已验证；该机固件不提供电量，显示为已连接与 `—`；狼蛛 F87 Pro 已实测电量与型号识别（状态字节为电池供电，型号签名取自设备应答）；其他型号电量粒度依固件而定 |
 | BIGBIG WON / Zikway 手柄 | VID `413D`，`FF7A:0001`；已观察到 PID `2104` / `2106` | 烈风 GALE 已有电量实测记录；待机或未连接时可能不响应，唤醒后可重试 |
 
 读取失败时保留历史电量并显示读数时间；没有历史值时显示 `—`。设备名称可能是接收器名称。接收器序列号不等于外设本体序列号；缺少可靠序列号时，换 USB 插口可能影响备注匹配。蓝牙设备没有 HID 序列号，以蓝牙地址作为物理标识。

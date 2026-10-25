@@ -298,3 +298,249 @@ pub fn bigbigwon_uuid(report: &[u8]) -> Option<[u8; 8]> {
     uuid.copy_from_slice(&report[3..11]);
     Some(uuid)
 }
+
+// Logitech HID++ 2.0 short frames for mice behind a LIGHTSPEED receiver
+// (usage page FF00). Layout per Logitech's public HID++ 1.0/2.0 protocol
+// documentation; semantics cross-checked against Solaar (pwr-Solaar/Solaar,
+// GPL-2.0) as protocol evidence — implementation written from scratch here.
+//
+// On a LIGHTSPEED receiver the two vendor collections split the two report
+// widths: FF00/0x01 carries the 7-byte short report (0x10) and FF00/0x02 the
+// 20-byte long report (0x11). Receiver registers answer short frames on the
+// first collection; frames addressed to the paired device are only relayed
+// as long frames through the second — a short device frame gets the HID++ 1.0
+// error 0x09 there. Device frames below are therefore long.
+// Frame: report id, device index, feature index, (function << 4) | software
+// id, then params. Replies echo the first four bytes; feature notifications
+// carry software id 0, so they never match a request.
+pub const HIDPP_SHORT: u8 = 0x10;
+pub const HIDPP_LONG: u8 = 0x11;
+/// Solaar's table of in-use software ids reserves 0x07 (OpenRGB), 0x0A
+/// (LGSTray), 0x0D (G HUB) and 0 (notifications/firmware); avoid them all.
+pub const HIDPP_SOFTWARE_ID: u8 = 0x0b;
+/// Root.Ping: feature 0x00, function 1. Replies echo the mark byte.
+const HIDPP_PING_ADDRESS: u8 = 0x10 | HIDPP_SOFTWARE_ID;
+const HIDPP_PING_MARK: u8 = 0x42;
+
+pub const HIDPP_FEATURE_DEVICE_NAME: u16 = 0x0003;
+pub const HIDPP_FEATURE_BATTERY_STATUS: u16 = 0x1000;
+pub const HIDPP_FEATURE_BATTERY_VOLTAGE: u16 = 0x1001;
+pub const HIDPP_FEATURE_UNIFIED_BATTERY: u16 = 0x1004;
+
+/// Root.GetFeature maps a feature id to the device-local feature index.
+pub fn hidpp_get_feature(device: u8, feature: u16) -> [u8; 20] {
+    let mut frame = [0; 20];
+    frame[..6].copy_from_slice(&[
+        HIDPP_LONG,
+        device,
+        0x00,
+        HIDPP_SOFTWARE_ID,
+        (feature >> 8) as u8,
+        feature as u8,
+    ]);
+    frame
+}
+
+/// Root.Ping; the reply carries the protocol version and echoes the mark.
+pub fn hidpp_ping(device: u8) -> [u8; 20] {
+    let mut frame = [0; 20];
+    frame[..7].copy_from_slice(&[
+        HIDPP_LONG,
+        device,
+        0x00,
+        HIDPP_PING_ADDRESS,
+        0,
+        0,
+        HIDPP_PING_MARK,
+    ]);
+    frame
+}
+
+pub fn hidpp_feature_call(device: u8, index: u8, function: u8) -> [u8; 20] {
+    let mut frame = [0; 20];
+    frame[..4].copy_from_slice(&[
+        HIDPP_LONG,
+        device,
+        index,
+        (function << 4) | HIDPP_SOFTWARE_ID,
+    ]);
+    frame
+}
+
+/// The caller passes params[0], e.g. the character offset for a name chunk.
+pub fn hidpp_feature_call1(device: u8, index: u8, function: u8, param: u8) -> [u8; 20] {
+    let mut frame = hidpp_feature_call(device, index, function);
+    frame[4] = param;
+    frame
+}
+
+fn hidpp_reply_ok(report: &[u8], device: u8, feature: u8, address: u8) -> bool {
+    report.len() >= 7
+        && matches!(report[0], HIDPP_SHORT | HIDPP_LONG)
+        && report[1] == device
+        && report[2] == feature
+        && report[3] == address
+}
+
+pub fn hidpp_ping_reply(report: &[u8], device: u8) -> Option<(u8, u8)> {
+    hidpp_reply_ok(report, device, 0x00, HIDPP_PING_ADDRESS).then(|| (report[4], report[5]))
+}
+
+/// GetFeature replies with the local index, 0 when the device lacks it.
+pub fn hidpp_feature_index(report: &[u8], device: u8) -> Option<u8> {
+    hidpp_reply_ok(report, device, 0x00, HIDPP_SOFTWARE_ID)
+        .then(|| report[4])
+        .filter(|index| *index != 0)
+}
+
+/// Unified Battery GetStatus: (state of charge, level approximation, charge
+/// status). A state of charge of 0 means "not reported"; fall back to the
+/// approximation exactly like Solaar: 8→90, 4→50, 2→20, 1→5, else nothing.
+pub fn hidpp_unified_battery(report: &[u8], device: u8, index: u8) -> Option<u8> {
+    hidpp_reply_ok(report, device, index, (1 << 4) | HIDPP_SOFTWARE_ID)
+        .then(|| match (report[4], report[5]) {
+            (0, 8) => 90,
+            (0, 4) => 50,
+            (0, 2) => 20,
+            (0, 1) => 5,
+            (level, _) => level,
+        })
+        .filter(|level| (1..=100).contains(level))
+}
+
+/// Battery Level Status: (charge level, next level, discharge status); a
+/// level of 0 is "unknown", not empty.
+pub fn hidpp_battery_status(report: &[u8], device: u8, index: u8) -> Option<u8> {
+    hidpp_reply_ok(report, device, index, HIDPP_SOFTWARE_ID)
+        .then(|| report[4])
+        .filter(|level| (1..=100).contains(level))
+}
+
+/// Battery Voltage (0x1001): [voltage_hi, voltage_lo, flags]; flags bit 7 is
+/// the charging indicator. Returns (millivolt, charging).
+pub fn hidpp_voltage_battery(report: &[u8], device: u8, index: u8) -> Option<(u16, bool)> {
+    hidpp_reply_ok(report, device, index, HIDPP_SOFTWARE_ID).then(|| {
+        (
+            u16::from_be_bytes([report[4], report[5]]),
+            report[6] & (1 << 7) != 0,
+        )
+    })
+}
+
+/// Charge percentage estimated from a Battery Voltage reading. Gaming mice
+/// report millivolt, so the discharge curve is modelled: the measured
+/// single-cell Li-Po table below matches Solaar's
+/// `estimate_battery_level_percentage`, with linear interpolation between
+/// points (OpenLogi documents the same derivation).
+pub fn hidpp_voltage_percent(millivolt: u16) -> u8 {
+    const CURVE: [(u16, u8); 13] = [
+        (4186, 100),
+        (4067, 90),
+        (3989, 80),
+        (3922, 70),
+        (3859, 60),
+        (3811, 50),
+        (3778, 40),
+        (3751, 30),
+        (3717, 20),
+        (3671, 10),
+        (3646, 5),
+        (3579, 2),
+        (3500, 0),
+    ];
+    let (top_mv, top_percent) = CURVE[0];
+    if millivolt >= top_mv {
+        return top_percent;
+    }
+    for (&(high_mv, high_percent), &(low_mv, low_percent)) in CURVE.iter().zip(CURVE.iter().skip(1))
+    {
+        if millivolt >= low_mv {
+            let span_mv = u32::from(high_mv - low_mv);
+            let span_percent = u32::from(high_percent - low_percent);
+            let above_low = u32::from(millivolt - low_mv);
+            let interpolated =
+                u32::from(low_percent) + (span_percent * above_low + span_mv / 2) / span_mv;
+            return u8::try_from(interpolated).unwrap_or(high_percent);
+        }
+    }
+    0
+}
+
+/// Battery Voltage reading collapsed to the displayed percentage.
+pub fn hidpp_voltage_battery_percent(report: &[u8], device: u8, index: u8) -> Option<u8> {
+    hidpp_voltage_battery(report, device, index).and_then(|(millivolt, _charging)| {
+        let percent = hidpp_voltage_percent(millivolt);
+        (percent > 0).then_some(percent)
+    })
+}
+
+/// Device name replies carry raw bytes, so UTF-8 sequences split across
+/// short-frame chunks stay decodable by the caller.
+pub fn hidpp_name_length(report: &[u8], device: u8, index: u8) -> Option<usize> {
+    hidpp_reply_ok(report, device, index, HIDPP_SOFTWARE_ID)
+        .then(|| report[4] as usize)
+        .filter(|length| *length > 0 && *length <= 32)
+}
+
+pub fn hidpp_name_text(report: &[u8], device: u8, index: u8) -> Option<&[u8]> {
+    hidpp_reply_ok(report, device, index, (1 << 4) | HIDPP_SOFTWARE_ID).then(|| &report[4..])
+}
+
+// Unifying-family receiver registers; the Lightspeed receiver speaks the same
+// HID++ 1.0 register protocol (cross-checked against Solaar and OpenLogi,
+// which both classify 046d:C539 as Unifying-compatible). Requests go out as
+// [0x10, device, 0x81/0x80, register, three bytes]; replies echo sub id and
+// register, and 1.0 errors arrive as [0x8f, sub id, register, code].
+pub const HIDPP_GET_REGISTER: u8 = 0x81;
+pub const HIDPP_SET_REGISTER: u8 = 0x80;
+/// Notification flags, 24-bit big-endian: bit 8 enables the wireless
+/// device-connection notifications the slot enumeration relies on.
+pub const HIDPP_REGISTER_NOTIFICATIONS: u8 = 0x00;
+/// Connection states: read reports the pairing count, writing 0x02 0x00 0x00
+/// makes the receiver re-broadcast one 0x41 arrival per paired slot.
+pub const HIDPP_REGISTER_CONNECTIONS: u8 = 0x02;
+
+pub fn hidpp_get_register(device: u8, register: u8) -> [u8; 7] {
+    [HIDPP_SHORT, device, HIDPP_GET_REGISTER, register, 0, 0, 0]
+}
+
+pub fn hidpp_set_register(device: u8, register: u8, values: [u8; 3]) -> [u8; 7] {
+    [
+        HIDPP_SHORT,
+        device,
+        HIDPP_SET_REGISTER,
+        register,
+        values[0],
+        values[1],
+        values[2],
+    ]
+}
+
+pub fn hidpp_get_register_reply(report: &[u8], device: u8, register: u8) -> Option<[u8; 3]> {
+    hidpp_reply_ok(report, device, HIDPP_GET_REGISTER, register)
+        .then_some([report[4], report[5], report[6]])
+}
+
+pub fn hidpp_set_register_ok(report: &[u8], device: u8, register: u8) -> bool {
+    hidpp_reply_ok(report, device, HIDPP_SET_REGISTER, register)
+}
+
+/// The pairing count sits in the second byte of the connections register.
+pub fn hidpp_pairing_count(reply: [u8; 3]) -> u8 {
+    reply[1]
+}
+
+/// A `0x41` device-connection notification: [0x10, slot, 0x41, address,
+/// protocol, device info, wpid low, (wpid high truncated in short frames)].
+/// Device-info bit 6 set means the link is not established; the wpid reads
+/// with data[2] as the high byte and data[1] as the low byte (Solaar:
+/// `data[2:3] + data[1:2]`), so `…41 0c 22 7f 40` is wpid 0x407F.
+pub fn hidpp_connection_notification(report: &[u8]) -> Option<(u8, bool, u16)> {
+    (report.len() >= 7 && report[2] == 0x41).then(|| {
+        (
+            report[1],
+            report[4] & (1 << 6) == 0,
+            u16::from_be_bytes([report[6], report[5]]),
+        )
+    })
+}
