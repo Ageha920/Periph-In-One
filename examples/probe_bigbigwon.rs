@@ -1,7 +1,9 @@
 //! Probe the Zikway/BIGBIG WON FF7A vendor interface for identity commands.
-//! Sends only read-only queries documented by the armorx-toolkit research:
-//! GetDevicePowerInfo(04), GetZkmVersion(0B), GetUUID(EF), GetMode(E2),
-//! GetProfileSize(D3), GetMacroList(D5), ReadConfig(D6).
+//! Sends only read-only queries: GetDevicePowerInfo(04), GetZkmVersion(0B),
+//! GetUUID(EF), GetMode(E2), GetProfileSize(D3), GetMacroList(D5) and
+//! ReadConfig(D6) from the armorx-toolkit research; GetWirelessFlag(FA) from
+//! the DevMgr.dll static analysis (reply A5 05 FA <flag> <sum>), not yet
+//! verified live.
 //!
 //! Wire format: 65-byte Windows HID buffers, report id 0; payload frames are
 //! `A5 | length(incl. A5 and checksum) | opcode | data | checksum`, checksum
@@ -71,7 +73,7 @@ fn main() {
     let mut buffer = [0u8; 256];
     // Frames come from the app's protocol module; GetUUID mirrors the
     // official client's A5 0C EF + eight zero selector bytes request.
-    let probes: [(&str, [u8; 65]); 7] = [
+    let probes: [(&str, [u8; 65]); 8] = [
         (
             "GetDevicePowerInfo(04)",
             protocol::bigbigwon_short_request(0x04),
@@ -85,6 +87,10 @@ fn main() {
         ),
         ("GetMacroList(D5)", protocol::bigbigwon_short_request(0xd5)),
         ("ReadConfig(D6)", protocol::bigbigwon_short_request(0xd6)),
+        (
+            "GetWirelessFlag(FA)",
+            protocol::bigbigwon_short_request(0xfa),
+        ),
     ];
     let mut answered_total = 0;
     for (label, report) in probes {

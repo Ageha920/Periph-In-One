@@ -360,6 +360,11 @@ fn bigbigwon_request_frame_matches_verified_wiring() {
     assert_eq!(report.len(), 65);
     assert_eq!(&report[..5], &[0x00, 0xa5, 0x04, 0x04, 0xad]);
     assert!(report[5..].iter().all(|&byte| byte == 0));
+    // GetWirelessFlag mirrors DevMgr.dll's precomputed constant A5 04 FA A3.
+    assert_eq!(
+        &bigbigwon_short_request(0xfa)[..5],
+        &[0x00, 0xa5, 0x04, 0xfa, 0xa3]
+    );
 }
 
 #[test]
@@ -402,6 +407,11 @@ fn bigbigwon_battery_rejects_bad_frames() {
     assert_eq!(bigbigwon_battery(&[0xa5, 0xff, 0x04, 0x58]), None);
     // Zero length byte must not underflow.
     assert_eq!(bigbigwon_battery(&[0xa5, 0x00]), None);
+    // A longer frame with a valid checksum: the vendor handler fixes len at 6.
+    assert_eq!(
+        bigbigwon_battery(&[0xa5, 0x07, 0x04, 0x58, 0x00, 0x00, 0x08]),
+        None
+    );
 }
 
 #[test]

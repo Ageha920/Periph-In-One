@@ -202,7 +202,9 @@ pub fn bigbigwon_battery(report: &[u8]) -> Option<u8> {
         return None;
     }
     let total = *report.get(1)? as usize;
-    if total < 6 || total > report.len() || report[2] != 0x04 {
+    // The vendor's reply handler (DevMgr.dll 0x10024573) fixes the frame
+    // length at 6: A5 06 04 <level> <state> <sum>.
+    if total != 6 || total > report.len() || report[2] != 0x04 {
         return None;
     }
     let sum = report[..total - 1]

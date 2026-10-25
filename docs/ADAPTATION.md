@@ -54,10 +54,30 @@
 
 优先级从强到弱：协议 uid（`Outcome.uid`）> USB 序列号（`devices::raw_serial_number` 直读）> USB 父口位置（`port_location`，跨重枚举稳定）> 拓扑兜底。适配器只需要做一件事：协议能报告每台身份就填 uid，其余由 `model.rs` 完成。
 
-## 7. 范例（待填）
+## 7. 范例
 
-以下三节在独立会话完成的驱动分析报告经复查核验后填入，作为本规范的 worked example：
+7.1 与 7.2 待对应复查核验后填入；7.3 已随 DevMgr.dll 复查（七条核验全 PASS，2026-10-25）落位。
 
-- 7.1 ATK HUB（Electron/明文 JS 设备表，跨 373B / CompX / Zikway 家族）
-- 7.2 KZZI 258A 家族（与已支持的 3554 CompX 家族的关系、56 型号表、电量协议）
-- 7.3 BIGBIG WON（DevMgr.dll 设备表、FF7A 命令空间完整定义）
+### 7.1 ATK HUB（待填）
+
+Electron 明文 JS 设备表，跨 373B / CompX 3554 / Zikway 413D 家族。
+
+### 7.2 KZZI 258A 家族（待填）
+
+与已支持的 3554 CompX 家族的关系、56 型号表、有线电量协议。
+
+### 7.3 BIGBIG WON（Zikway FF7A 家族）
+
+来源：BigBigWonAssistant 1.0.7.7 的 DevMgr.dll 静态分析（SHA-256 41cf4c1e…8c436）。
+
+**身份模型**：全部型号共享同一组 VID/PID——413D×{2104 连接态, 2106 底座态, 2114}，另有 Switch Pro（057E:2009）与 DS4/DS3（054C:05C5、054C:0DF2）模拟人格；型号不按 PID 区分，按 USB 产品字符串区分（ZJ-GALE→GALE、C4_SERVER→Gale2、ZJ-C1ZJ→Rainbow3、ZJ-MJC6→Aether、ZJ-BLACK_→Mage、ZJ-C2SL→BLITZ2 等 12 类映射）。厂商客户端自身不过滤 FF7A（DevMgr.dll 全文零命中，FF7A/usage1 是固件描述符的属性），主应用按 VID 413D + FF7A/usage1 匹配且不锁 PID，比厂商更严且与实测一致。
+
+**电量**：唯一电量操作码 04，应答处理器要求长度字节恰好 6（A5 06 04 电量 状态 校验和）；`protocol.rs` 的 `bigbigwon_battery` 已按此对齐（长度不为 6 即拒绝）。
+
+**身份链第一级**：GetUUID（EF）请求 A5 0C EF 加 8 字节零选择器，应答帧 [3..10] 为 8 字节 UUID；静态语义与现有实现逐字段一致。
+
+**命令空间（记录档，未实现）**：短查询约 28 个操作码（04/0B/D3/D4/D5/D6/D9/DA/DB/DC/DD/E1/E2/F5/F6/F7/FA/70/72/73/F8 等），设置类约 25 个（02 SetLogoLED、05 Switch2UDisk、0E Save2Device、1A Reset、72 亮度、73 灯效模式、D2/D4/DA/DC/E1/F6/F7/FB/FD 等），A4 长帧配置族按 240/280/335/454/484/508 字节分 7 个版本；查询用 len=04、设置用 len=05 且多一个数据字节是普遍规律。新增的 GetWirelessFlag（FA，请求 A5 04 FA A3，应答 A5 05 FA flag 校验和）已加入 examples/probe_bigbigwon.rs，待连接态真机验证。
+
+**灯效（LIGHTING 预留位）**：F5 GetLogoLED、02 SetLogoLED（A5 0D 02 加 10 参数字节）、72 亮度读写、73 灯效模式读写、70 SetLEDShow 提交、DD 查询与 51 设置充电灯效；SetLED 有 16 字节定长与变长（头部 12 字节加 N×3 RGB 三元组）两个重载，长度字节随区数递增。JSON 字段到参数的映射在 WndMgr.dll，未展开。
+
+**复查锚点**：帧常量 0xad0404a5（04）、0xa3fa04a5（FA）、0x7cd304a5（D3）、0x197004a5（70）均为厂商预计算常量，与 8 位环绕累加互证；应答分发三层结构（入口 0x10024113、索引表 0x10024EB8、跳转表 0x10024E64）。
