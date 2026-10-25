@@ -56,15 +56,23 @@
 
 ## 7. 范例
 
-7.1 与 7.2 待对应复查核验后填入；7.3 已随 DevMgr.dll 复查（七条核验全 PASS，2026-10-25）落位。
+7.1 待复查核验后填入；7.2 与 7.3 已随复查落位（2026-10-25）。
 
 ### 7.1 ATK HUB（待填）
 
 Electron 明文 JS 设备表，跨 373B / CompX 3554 / Zikway 413D 家族。
 
-### 7.2 KZZI 258A 家族（待填）
+### 7.2 KZZI 258A 家族（Beiying OEM 双传输线）
 
-与已支持的 3554 CompX 家族的关系、56 型号表、有线电量协议。
+来源：KZZI RGB Keyboard 驱动 DeviceDriver.exe 静态分析（SHA-256 2a35647a…77079），复查六条载荷性结论五条 PASS、一条修正后采用。
+
+**家族关系**：258A 与 3554 是同一 OEM（Beiying）同一驱动引擎的两条传输线。键盘本体 USB 直连时以 258A:<PID> 枚举，走 0x208 字节 feature report 有线协议：reportId 0x09，命令族 0x82（AccessData 单帧）/ 0x84 / 0x88（分页写）/ 0x87（分页读，GetPower 用它读 2 字节），大块数据按 65 字节 0x0A 分块帧承载（62 字节负载，逐包 0xFF-求和校验）。2.4G/蓝牙接收器以 3554:FA09 或伪装 Apple VID 的 05AC:024F 枚举，走 20 字节 reportId 0x13 协议——即主应用已支持的家族。同一型号两种形态：K75RGB Lite 有线是 258A:01B0，经接收器是 3554:FA09。
+
+**识别锚点**：接收器 = FF02/0002 + 20 字节 Input/Output 报表 + 报表 ID 0x13（厂商五重 caps 校验），通用 VID 0x258A 绝不能只按 VID 匹配；有线 = VID/PID（Cfg.ini 表内）+ FF00/01 或 FF02/01 或 FF02/02 + feature 报表长度 0x208，报表 ID 从 caps 派生。型号身份 = 新代档案的 Psd 六字节键（GetPSD cmd 0x05 应答与 KB.ini Psd= 同源），与主应用 `kzzi_model_name` 表交叉验证一致（注意 KB.ini 为十六进制文本、表内为十进制）。01C8/01DA/024D 三个档案缺 Psd，为异常档案。
+
+**电量（复查修正后口径）**：接收器路径的 0x4A 命令在本驱动中有包装函数（0x40E560：发 20 字节帧、回读两字节，与 `kzzi_battery` 的 (level, state) 形态一致；静态可达性未证，虚调用槽 +0xA0 的 8 处 UI 区调用点未能绑定设备对象）。主应用的 0x4A 实现来自真机探测，与此静态锚点互相印证。有线路径的电量（0x87 双页读）未实测。原报告的本驱动无 0x4A、电量仅有线路径两条结论被复查推翻或降档。
+
+**收录决策**：56 个 258A 型号全部是有线本体 PID，接收器形态已被 3554:FA09 适配覆盖；按第 3 节规则有线型号不进 matcher，全表进附录 A，接收器识别的最终锚点沿用 caps 事实而非 VID。
 
 ### 7.3 BIGBIG WON（Zikway FF7A 家族）
 
@@ -81,3 +89,66 @@ Electron 明文 JS 设备表，跨 373B / CompX 3554 / Zikway 413D 家族。
 **灯效（LIGHTING 预留位）**：F5 GetLogoLED、02 SetLogoLED（A5 0D 02 加 10 参数字节）、72 亮度读写、73 灯效模式读写、70 SetLEDShow 提交、DD 查询与 51 设置充电灯效；SetLED 有 16 字节定长与变长（头部 12 字节加 N×3 RGB 三元组）两个重载，长度字节随区数递增。JSON 字段到参数的映射在 WndMgr.dll，未展开。
 
 **复查锚点**：帧常量 0xad0404a5（04）、0xa3fa04a5（FA）、0x7cd304a5（D3）、0x197004a5（70）均为厂商预计算常量，与 8 位环绕累加互证；应答分发三层结构（入口 0x10024113、索引表 0x10024EB8、跳转表 0x10024E64）。
+
+## 附录 A：KZZI 258A 有线型号表（已识别档）
+
+来源：驱动 Cfg.ini 明文全表，Psd 映射经复查抽查验证。全部为有线本体 PID，接收器形态以 3554:FA09 / 05AC:024F 枚举（已被现有适配覆盖），按第 3 节规则不进 matcher。代际：旧代无 Psd，新代（00CF 起）带 Psd 档案；标注沿用厂商 DevName 原文。
+
+| PID | 型号 | 代 | 标注 |
+| --- | --- | --- | --- |
+| 0049 | KZZI-G68 Keyboard | 旧 | |
+| 004A | KZZI-61RGB Wired Keyboard | 旧 | Wired |
+| 004B | KZZI-100RGB Wireless Keyboard | 旧 | Wireless |
+| 004C | KZZI-87RGB Keyboard | 旧 | |
+| 004D | KZZI-71RGB Wired Keyboard | 旧 | Wired |
+| 004F | KZZI-G87RGB Wired Keyboard | 旧 | Wired |
+| 0055 | KZZI-61 Keyboard | 旧 | |
+| 0056 | KZZI-100RGB Keyboard | 旧 | |
+| 0059 | KZZI-84RGB Keyboard | 旧 | |
+| 005A | KZZI-71RGB Keyboard | 旧 | |
+| 005B | KZZI-987RGB | 旧 | |
+| 005C | KZZI-G68RGB-UK Keyboard | 旧 | |
+| 005D | KZZI-857 Keyboard | 旧 | |
+| 005E | KZZI68RGB Bluetooth Dual Mode | 旧 | 蓝牙双模 |
+| 0064 | KZZI-68RGB Wired Keyboard | 旧 | Wired |
+| 0065 | KZZI-61RGB ISO Return Keyboard | 旧 | |
+| 0067 | KZZI-100PRO Keyboard | 旧 | |
+| 0068 | KZZI-987RGB Wired Keyboard | 旧 | Wired |
+| 0069 | KZZI-71RGB Wireless | 旧 | Wireless |
+| 006F | KZZI-68Plus Keyboard | 旧 | |
+| 0070 | KZZI-K980 RGB Keyboard | 旧 | |
+| 0075 | KZZI-G68RGB ISO Return Keyboard | 旧 | |
+| 0078 | KZZI-87 Keyboard | 旧 | |
+| 0079 | KZZI-68Pro Keyboard | 旧 | |
+| 007A | KZZI-61 RGB Bluetooth Dual Mode | 旧 | 蓝牙双模 |
+| 007C | KZZI-87T RGBWired Keyboard | 旧 | Wired |
+| 007D | KZZI-G87RGB Wired Keyboard | 旧 | Wired |
+| 0089 | KZZI-96 RGB Keyboard | 旧 | |
+| 008C | KZZI-61RGB ISO ReturnWired | 旧 | Wired |
+| 00A2 | KZZI-68RGB Wired Keyboard | 旧 | Wired |
+| 00AA | KZZI-100RGB Keyboard | 旧 | |
+| 00C6 | KZZI-K61 RGB Keyboard | 旧 | |
+| 00CF | Kzzi-K75 RGB | 新 | |
+| 0108 | Kzzi-K68 | 新 | |
+| 0112 | Kzzi-K75 RGB key | 新 | |
+| 0114 | Kzzi-K84 | 新 | |
+| 0149 | Kzzi-K75Pro | 新 | |
+| 0160 | Kzzi-Z98 | 新 | |
+| 017D | Kzzi-K20RGB | 新 | |
+| 0186 | Kzzi-K68Pro | 新 | |
+| 0195 | Kzzi-K98 | 新 | |
+| 01AA | Kzzi-K75Pro | 新 | |
+| 01AE | Kzzi-K87 | 新 | |
+| 01B0 | KZZI-K75RGB Lite | 新 | |
+| 01B2 | Kzzi-K21 | 新（无 Fw 键） | |
+| 01B6 | Kzzi-i75 RGB | 新 | |
+| 01C8 | Kzzi-K98Pro | 异常（缺 Psd） | |
+| 01D5 | Kzzi-K87MAX | 新 | |
+| 01DA | Kzzi-K87Pro | 异常（缺 Psd） | |
+| 024D | Kzzi-K75V2Pro | 异常（缺 Psd） | |
+| 0253 | Kzzi-K75V2 | 新 | |
+| 0260 | Kzzi-Z75 | 新 | |
+| 027D | Kzzi K98V2 | 新 | |
+| 029B | Kzzi-i98 | 新 | |
+| 029F | Kzzi-i20 | 新 | |
+| 02E2 | Kzzi-i98 | 新 | |

@@ -139,7 +139,9 @@ pub fn kzzi_identity(report: &[u8]) -> Option<[u8; 6]> {
 
 /// Battery reply: (level, state); 0x01 on battery, 0x10 cable/charging.
 /// The receiver streams unrelated 0x13 frames, so the command nibble, the
-/// checksum and the 1..=100 level range all gate a reading.
+/// checksum and the 1..=100 level range all gate a reading. The 0x4A query
+/// is also wrapped by the vendor's own DeviceDriver.exe at 0x40E560
+/// (review-verified static anchor, reachability unproven).
 pub fn kzzi_battery(report: &[u8]) -> Option<(u8, u8)> {
     if !kzzi_frame_ok(report) || report[1] & 0x7f != 0x4a {
         return None;
