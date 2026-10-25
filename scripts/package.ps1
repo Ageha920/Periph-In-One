@@ -14,6 +14,8 @@ try {
     Copy-Item -LiteralPath licenses/Slint-Royalty-Free-2.0.md -Destination "$stage/licenses"
     # Ship the same README and every image it references, without local configuration.
     Copy-Item -LiteralPath README.md,contribution.md -Destination $stage
+    New-Item -ItemType Directory -Path "$stage/docs" -Force | Out-Null
+    Copy-Item -LiteralPath docs/ADAPTATION.md -Destination "$stage/docs"
     New-Item -ItemType Directory -Path "$stage/.github" -Force | Out-Null
     Copy-Item -LiteralPath .github/CICD.md -Destination "$stage/.github"
     New-Item -ItemType Directory -Path "$stage/assets/readme" -Force | Out-Null
