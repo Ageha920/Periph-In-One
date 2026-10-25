@@ -68,6 +68,52 @@ pub fn atk_ff04_battery(report: &[u8]) -> Option<(u8, u8)> {
     (report[6] <= 100).then_some((report[6], report[7]))
 }
 
+/// ATK V2 family over the 2.4G dongle's FF02/2 interface (the receiver line
+/// of ATK V HUB's device table). Requests reuse `atk_ff04_request`: the same
+/// 16-byte frame with report id 8. Replies arrive as 17-byte input reports,
+/// wire-verified on the 3554:F58E 1K dongle: byte 1 echoes the command,
+/// byte 2 is the status (0 = answered with data), byte 4 the eeprom address,
+/// byte 5 the dataValidLen, data from byte 6, and byte 16 the checksum. The
+/// checksum rule equals the FF04 feature frame: 0x55 minus (report id plus
+/// the first 15 frame bytes), i.e. the sum of all 17 wire bytes is 0x55.
+pub fn atk_v2_ff02_reply_ok(report: &[u8]) -> bool {
+    report.len() == 17
+        && report[0] == 8
+        && report[..17]
+            .iter()
+            .fold(0u8, |sum, &byte| sum.wrapping_add(byte))
+            == 0x55
+}
+
+/// (level, charging) from a GetBatteryLevel reply. commandStatus 0 and
+/// dataValidLen >= 1 gate the reading; level 0 stays rejected as unverified,
+/// mirroring the kzzi family, until a live 0% capture proves it real.
+pub fn atk_v2_ff02_battery(report: &[u8]) -> Option<(u8, u8)> {
+    if !atk_v2_ff02_reply_ok(report) || report[1] != 0x04 || report[2] != 0 || report[5] == 0 {
+        return None;
+    }
+    let (level, charging) = (report[6], report[7]);
+    ((1..=100).contains(&level)).then_some((level, charging))
+}
+
+/// (mouseOnline, rf id) from a GetWirelessMouseOnline reply. The rf id spans
+/// bytes 7..10 regardless of dataValidLen, mirroring the vendor's reader.
+pub fn atk_v2_ff02_online(report: &[u8]) -> Option<(u8, [u8; 3])> {
+    if !atk_v2_ff02_reply_ok(report) || report[1] != 0x03 || report[2] != 0 {
+        return None;
+    }
+    Some((report[6], [report[7], report[8], report[9]]))
+}
+
+/// (cid, mid, unique) from a GetMouseCIDMID reply. The vendor checks model
+/// consistency against the expected CID/MID pair; unique is a third byte.
+pub fn atk_v2_ff02_cid_mid(report: &[u8]) -> Option<(u8, u8, u8)> {
+    if !atk_v2_ff02_reply_ok(report) || report[1] != 0x10 || report[2] != 0 || report[5] < 3 {
+        return None;
+    }
+    Some((report[6], report[7], report[8]))
+}
+
 pub fn crc16(data: &[u8]) -> u16 {
     let mut crc = 0xffff_u16;
     for &byte in data {

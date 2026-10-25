@@ -237,8 +237,13 @@ fn receiver_interfaces(api: &HidApi) -> BTreeMap<String, Vec<&DeviceInfo>> {
         groups.entry(container_id(info)).or_default().push(info);
     }
     for interfaces in groups.values_mut() {
-        // FF05 first: the ATK dongle's protocol interface.
-        interfaces.sort_by_key(|d| d.usage_page() != 0xff05);
+        // FF05 first: the ATK dongle's protocol interface. FF02 next: the V2
+        // dongle battery interface and the vendor fallbacks behind it.
+        interfaces.sort_by_key(|d| match d.usage_page() {
+            0xff05 => 0,
+            0xff02 => 1,
+            _ => 2,
+        });
     }
     groups
 }

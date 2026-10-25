@@ -12,7 +12,7 @@
 | 传输与拓扑 | `src/devices.rs` | `open_pair` / `send` / `drain` / `KzziLink` 传输件，ContainerId 分组，`port_location`，扫描编排 |
 | 身份 | `src/model.rs` | 四级身份链与历史合并，厂商无关，新适配不改此文件 |
 
-现有家族：ATK FF05/FF02、ATK FF04（V2 鼠标，含 CompX 3554 段）、DARKRIM TLV、KZZI/Compx 0x13、BIGBIG WON(Zikway) FF7A A5。
+现有家族：ATK FF05/FF02、ATK FF04（V2 鼠标，含 CompX 3554 段）、ATK V2 FF02 dongle（CompX 3554 接收器线）、DARKRIM TLV、KZZI/Compx 0x13、BIGBIG WON(Zikway) FF7A A5。
 
 规则：
 
@@ -143,6 +143,32 @@
 ### 7.7 复查教训（第二批新增）
 
 **写语义的 sub_id 偏移必须真机核验**：HID++ 长寄存器读是 0x83 而非 0x82（Solaar 的 `0x8100 | 0x2B5` 中，长寄存器值的 0x200 位使 0x81 进位为 0x83；0x82 是长写）。初版把长读当 0x82 发上了真机——接收器对该写入静默忽略，配对未受影响，但这是扫描路径上真实的写操作，与"扫描零寄存器写入"红线冲突。规则：任何新寄存器路径先以探针在真机上确认应答回显，再进适配器；混淆代码中的数字常量（含字符串数组解码残留）不能单独作为字段依据，必须以字段名为锚交叉验证。
+
+### 7.8 ATK V HUB（CompX 3554 FF02 dongle 线）
+
+来源：ATK V HUB 2.3.47 的 app.asar 静态分析（SHA-256 见 docs/VALIDATION.md），3554:F58E 真机验证（2026-10-25）。
+
+**家族关系**：VXE/ATK 的 CompX-VID 0x3554 dongle 线（1K/4K/8K 接收器，官方设备表 receiver 标记 9 个 PID）同时暴露 FF04:0002 与 FF02:0002 两个集合。FF04 feature 通道真机不可用（写入被拒），实际通信走 FF02:0002 的 17 字节 output/input 报表——帧布局与 FF04 家族完全一致（16 字节帧 + report id 8 + 0x55 校验），即 7.1 中"早期批次 FF02 段"推断的实证。7.1 的 FF04 PIDS_3554 表与本线接收器表有 6 个 PID 重叠，两适配器按 Usage Page 天然互斥；`devices.rs` 的分组排序（FF05 → FF02 → 其余）保证 FF02 接口优先被探测。
+
+**帧**：请求 = report id 8 + 16 字节帧（[0] = 命令、[1] = status、[2..3] = 地址、[4] = dataValidLen、[5..14] = 数据、[15] = 校验 = 0x55 - (0x08 + sum(帧[0..15]))），与 `protocol::atk_ff04_request` 逐字段一致；应答为 17 字节 input 报表，byte 1 回显命令、byte 2 为 status（0 = 有效数据）、byte 5 为 dataValidLen、数据自 byte 6，全帧 17 字节和 ≡ 0x55。缺校验和的请求只会得到 status=1、dataValidLen=0 的裸 ACK（真机复现）——探测与实现都必须携带校验和。
+
+**命令空间**（3/4/16 已真机验证）：GetWirelessMouseOnline=3 应答 mouseStatus（1 = 有鼠标在线）加 3 字节 rf id（dataValidLen 仅计 mouseStatus，rf id 恒在 byte 7..10）；GetBatteryLevel=4 应答 dataValidLen=2：电量、充电标志、电压大端 mV（实测 0x0F51 = 3921）；GetMouseCIDMID=16 应答 CID/MID/unique 三字节（厂商以 CID,MID 校验型号一致性）；GetMouseVersion=18 应答两字节版本（实测 3.0）。接收器不主动推送状态帧（被动监听 12 秒无流量），电量靠轮询。SetWirelessDonglePair=5、GetWirelessDonglePairResult=6、EEPROM 族 7/8 等写命令仅记录不实现。
+
+**电量与身份**：电量应答以 status=0 且 dataValidLen≥1 为门槛，1..=100 之外拒绝（0% 未实测，不冒认）；rf id 作 `Outcome.uid` 接入身份链（重配对会改变，届时历史合并退回端口链）。在线/未响应口径：应答命令 3 即接收器在线；mouseStatus=1 但命令 4 无有效应答 = 鼠标未响应；mouseStatus≠1 = 接收器在线未检测到鼠标（经 `no_battery` 上报，UI 记为已连接）。
+
+**收录决策**：9 个 receiver PID 进 matcher（仅 F58E 已实测，其余已实现未实测）；7 个有线 PID 不进——传输形态未证，且 FF04 适配器已覆盖其中与 PIDS_3554 重叠的部分。
+
+### 7.5 iKF Audio（Cm FF00 耳机线）
+
+来源：iKF Audio（CmXearSDK 体系，.NET/WPF）反编译的 ProtocolHandler/HIDManager，38B1:3419 真机验证（2026-10-25）。
+
+**接口与帧**：应用以 `usagePage 0xFF00` 打开耳机（`new HIDManager(vid, pid, 65280, 3, …)`），输出报表 64 字节 report id 2，电量经 feature report id 3 或输入报表回流。`PackCommand` 把应用命令包成 `FF <seq> <len> <payload> AA`，再套 `02 55 80 00 <总长LE> 00 FF <seq>` 头并零填充到 64。电量查询命令为 `{FA, 0C}`（`FindPowerLevel` 线程每 10 秒下发，0xFA = 属性查询族、0x0C = 电量属性）。完整输出帧：`02 55 80 00 06 00 FF <seq> 02 FA 0C AA 0×52`。
+
+**应答**：输入报表 report id 3，`03 55 80 00 <总长LE> 00 FF <seq> <FF 帧载荷>`；电量帧载荷 `{04, 0C, <电量>, 0, 0}`，恒伴一个 `{01, FE}` 心跳帧在先。电量门槛：report id 3、55 magic、载荷类型 04、属性 0C、AA 收尾、电量 1..=100（0% 未实测）。协议校验体系含 CRC16-IBM（表驱动）与 0xAA 收尾，电量短帧路径以字段锚定替代 CRC 复算。
+
+**身份与连接语义**：连接/断开经 dongle 文本事件（DG_CONNECTED）与命令 10/11 应答上报，电量无每台唯一身份命令，身份链走 USB 序列号/端口兜底。写入仅 FF00:0001 接口可用；同机 FF02:0002 与 FF03 集合对电量无效。
+
+**收录决策**：VID 0x38B1 + FF00:0001 进 matcher，不锁 PID（APO 驱动目录含 3412/341E/3419 多型号人格）；V11 Pro（3419）已实测，其余已实现未实测。
 
 ## 附录 A：KZZI 258A 有线型号表（已识别档）
 

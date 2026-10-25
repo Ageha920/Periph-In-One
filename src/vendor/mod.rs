@@ -13,6 +13,7 @@
 
 mod atk;
 mod atk_v2;
+mod atk_v2_dongle;
 mod aula;
 mod bigbigwon;
 mod darkrim;
@@ -23,6 +24,7 @@ use hidapi::{DeviceInfo, HidApi};
 
 pub use atk::AtkMouse;
 pub use atk_v2::AtkV2Mouse;
+pub use atk_v2_dongle::AtkV2Dongle;
 pub use aula::AulaCommandKeyboard;
 pub use bigbigwon::BigbigwonGamepad;
 pub use darkrim::DarkrimHeadset;
@@ -98,6 +100,7 @@ pub trait VendorAdapter {
 pub const ADAPTERS: &[&dyn VendorAdapter] = &[
     &AtkMouse,
     &AtkV2Mouse,
+    &AtkV2Dongle,
     &DarkrimHeadset,
     &KzziKeyboard,
     &BigbigwonGamepad,
