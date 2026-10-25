@@ -6,6 +6,7 @@ __pycache__/
 *.pyc
 /docs/*
 !/docs/ADAPTATION.md
+!/docs/HARDWARE-ARCHITECTURE.md
 /agents.md
 /AGENTS.md
 /scripts/*
