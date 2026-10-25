@@ -12,7 +12,7 @@
 | 传输与拓扑 | `src/devices.rs` | `open_pair` / `send` / `drain` / `KzziLink` 传输件，ContainerId 分组，`port_location`，扫描编排 |
 | 身份 | `src/model.rs` | 四级身份链与历史合并，厂商无关，新适配不改此文件 |
 
-现有家族：ATK FF05/FF02、ATK FF04（V2 鼠标，含 CompX 3554 段）、DARKRIM TLV、KZZI/Compx 0x13、BIGBIG WON(Zikway) FF7A A5。
+现有家族：ATK FF05/FF02、ATK FF04（V2 鼠标，含 CompX 3554 段）、DARKRIM TLV、iKF FF00 耳机线、KZZI/Compx 0x13、BIGBIG WON(Zikway) FF7A A5。
 
 规则：
 
@@ -146,6 +146,18 @@
 ### 7.7 复查教训（第二批新增）
 
 **写语义的 sub_id 偏移必须真机核验**：HID++ 长寄存器读是 0x83 而非 0x82（Solaar 的 `0x8100 | 0x2B5` 中，长寄存器值的 0x200 位使 0x81 进位为 0x83；0x82 是长写）。初版把长读当 0x82 发上了真机——接收器对该写入静默忽略，配对未受影响，但这是扫描路径上真实的写操作，与"扫描零寄存器写入"红线冲突。规则：任何新寄存器路径先以探针在真机上确认应答回显，再进适配器；混淆代码中的数字常量（含字符串数组解码残留）不能单独作为字段依据，必须以字段名为锚交叉验证。
+
+### 7.9 iKF Audio（Cm FF00 耳机线）
+
+来源：iKF Audio（CmXearSDK 体系，.NET/WPF）反编译的 ProtocolHandler/HIDManager，38B1:3419 真机验证（2026-10-25）。
+
+**接口与帧**：应用以 `usagePage 0xFF00` 打开耳机（`new HIDManager(vid, pid, 65280, 3, …)`），输出报表 64 字节 report id 2，电量经 feature report id 3 或输入报表回流。`PackCommand` 把应用命令包成 `FF <seq> <len> <payload> AA`，再套 `02 55 80 00 <总长LE> 00 FF <seq>` 头并零填充到 64。电量查询命令为 `{FA, 0C}`（`FindPowerLevel` 线程每 10 秒下发，0xFA = 属性查询族、0x0C = 电量属性）。完整输出帧：`02 55 80 00 06 00 FF <seq> 02 FA 0C AA 0×52`。
+
+**应答**：输入报表 report id 3，`03 55 80 00 <总长LE> 00 FF <seq> <FF 帧载荷>`；电量帧载荷 `{04, 0C, <电量>, 0, 0}`，恒伴一个 `{01, FE}` 心跳帧在先。电量门槛：report id 3、55 magic、载荷类型 04、属性 0C、AA 收尾、电量 1..=100（0% 未实测）。协议校验体系含 CRC16-IBM（表驱动）与 0xAA 收尾，电量短帧路径以字段锚定替代 CRC 复算。
+
+**身份与连接语义**：连接/断开经 dongle 文本事件（DG_CONNECTED）与命令 10/11 应答上报，电量无每台唯一身份命令，身份链走 USB 序列号/端口兜底。写入仅 FF00:0001 接口可用；同机 FF02:0002 与 FF03 集合对电量无效。
+
+**收录决策**：VID 0x38B1 + FF00:0001 进 matcher，不锁 PID（APO 驱动目录含 3412/341E/3419 多型号人格）；V11 Pro（3419）已实测，其余已实现未实测。
 
 ## 附录 A：KZZI 258A 有线型号表（已识别档）
 

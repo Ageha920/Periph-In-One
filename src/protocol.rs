@@ -666,3 +666,36 @@ pub fn aula_command_battery(report: &[u8], cmd: u8) -> Option<(u8, u8)> {
     let (level, state) = (frame[8], frame[9]);
     ((1..=100).contains(&level)).then_some((level, state))
 }
+
+/// iKF/Cm headset wire protocol on the FF00/1 interface (38B1 VID, reverse
+/// engineered from iKF Audio's ProtocolHandler and verified live on the
+/// 38B1:3419 V11 Pro). Output reports are 64 bytes with report id 2; the
+/// battery query carries the FF-framed command {FA, 0C} - 0xFF, seq, length,
+/// payload, 0xAA trailer - wrapped in the 55/80 header.
+pub fn ikf_battery_query(seq: u8) -> [u8; 64] {
+    let mut report = [0; 64];
+    report[..12].copy_from_slice(&[
+        0x02, 0x55, 0x80, 0x00, 0x06, 0x00, 0xFF, seq, 0x02, 0xFA, 0x0C, 0xAA,
+    ]);
+    report
+}
+
+/// Battery level from a GetProperty reply. The device answers on the input
+/// pipe with report id 3: 55/80 header, total length, 0xFF, echo seq, then
+/// the FF-framed payload {04, 0C, level, 0, 0} closed by 0xAA. Property 0x0C
+/// is the battery property the official app polls with {FA, 0C}. Level 0
+/// stays rejected as unverified, mirroring the other families.
+pub fn ikf_battery(report: &[u8]) -> Option<u8> {
+    if report.len() < 14
+        || report[0] != 0x03
+        || report[1] != 0x55
+        || report[6] != 0xFF
+        || report[8] != 0x04
+        || report[9] != 0x0C
+        || report[13] != 0xAA
+    {
+        return None;
+    }
+    let level = report[10];
+    ((1..=100).contains(&level)).then_some(level)
+}

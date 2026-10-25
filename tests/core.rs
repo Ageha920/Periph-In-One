@@ -146,6 +146,57 @@ fn compx_model_table_covers_the_mchose_oem_line() {
 }
 
 #[test]
+fn ikf_query_frame_matches_the_official_pack() {
+    // PackCommand({FA, 0C}) from iKF Audio's ProtocolHandler: report id 2,
+    // 55/80 header, total length 6, FF, seq, FF-framed command, AA trailer.
+    let frame = ikf_battery_query(0);
+    assert_eq!(
+        &frame[..12],
+        &[
+            0x02, 0x55, 0x80, 0x00, 0x06, 0x00, 0xFF, 0, 0x02, 0xFA, 0x0C, 0xAA
+        ]
+    );
+    assert!(frame[12..].iter().all(|&byte| byte == 0));
+    // The seq byte is the only variable slot.
+    assert_eq!(ikf_battery_query(7)[7], 7);
+}
+
+#[test]
+fn ikf_battery_parses_the_captured_reply() {
+    // Captured live from the 38B1:3419 V11 Pro: property 0x0C answers 0x46.
+    let reply = *b"\x03\x55\x80\x00\x08\x00\xff\x00\x04\x0c\x46\x00\x00\xaa";
+    assert_eq!(ikf_battery(&reply), Some(70));
+    // The heartbeat frame that always precedes the battery frame must not
+    // parse as a reading.
+    let heartbeat = *b"\x03\x55\x80\x00\x05\x00\xff\x00\x01\xfe\xaa\x00\x00\x00";
+    assert_eq!(ikf_battery(&heartbeat), None);
+    // Wrong report id, magic, payload type, property or trailer.
+    let mut id = reply;
+    id[0] = 0x02;
+    assert_eq!(ikf_battery(&id), None);
+    let mut magic = reply;
+    magic[1] = 0x56;
+    assert_eq!(ikf_battery(&magic), None);
+    let mut kind = reply;
+    kind[8] = 0x01;
+    assert_eq!(ikf_battery(&kind), None);
+    let mut prop = reply;
+    prop[9] = 0x0d;
+    assert_eq!(ikf_battery(&prop), None);
+    let mut trailer = reply;
+    trailer[13] = 0xab;
+    assert_eq!(ikf_battery(&trailer), None);
+    // Level gates: 0% unverified, above 100% impossible.
+    for level in [0u8, 101] {
+        let mut over = reply;
+        over[10] = level;
+        assert_eq!(ikf_battery(&over), None);
+    }
+    assert_eq!(ikf_battery(&reply[..10]), None);
+    assert_eq!(ikf_battery(&[]), None);
+}
+
+#[test]
 fn kzzi_requests_carry_the_receiver_checksum() {
     let battery = kzzi_request(0x4a);
     assert_eq!(&battery[..4], &[0x13, 0x4a, 0, 0]);

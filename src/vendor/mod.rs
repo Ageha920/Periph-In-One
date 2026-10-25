@@ -17,6 +17,7 @@ mod atk_v2_dongle;
 mod aula;
 mod bigbigwon;
 mod darkrim;
+mod ikf;
 mod kzzi;
 mod logitech;
 
@@ -28,6 +29,7 @@ pub use atk_v2_dongle::AtkV2Dongle;
 pub use aula::AulaCommandKeyboard;
 pub use bigbigwon::BigbigwonGamepad;
 pub use darkrim::DarkrimHeadset;
+pub use ikf::IkfHeadset;
 pub use kzzi::KzziKeyboard;
 pub use logitech::LogitechReceiver;
 
@@ -102,6 +104,7 @@ pub const ADAPTERS: &[&dyn VendorAdapter] = &[
     &AtkV2Mouse,
     &AtkV2Dongle,
     &DarkrimHeadset,
+    &IkfHeadset,
     &KzziKeyboard,
     &BigbigwonGamepad,
     &LogitechReceiver,
