@@ -12,6 +12,7 @@
 //!   inside the adapter's `read`; the trait never assumes a uniform transport.
 
 mod atk;
+mod atk_v2;
 mod bigbigwon;
 mod darkrim;
 mod kzzi;
@@ -19,6 +20,7 @@ mod kzzi;
 use hidapi::{DeviceInfo, HidApi};
 
 pub use atk::AtkMouse;
+pub use atk_v2::AtkV2Mouse;
 pub use bigbigwon::BigbigwonGamepad;
 pub use darkrim::DarkrimHeadset;
 pub use kzzi::KzziKeyboard;
@@ -74,6 +76,11 @@ pub trait VendorAdapter {
 }
 
 /// Every supported product line, in scan order. Match rules are disjoint by
-/// VID, so the first matching adapter owns a device.
-pub const ADAPTERS: &[&dyn VendorAdapter] =
-    &[&AtkMouse, &DarkrimHeadset, &KzziKeyboard, &BigbigwonGamepad];
+/// VID plus usage page, so the first matching adapter owns a device.
+pub const ADAPTERS: &[&dyn VendorAdapter] = &[
+    &AtkMouse,
+    &AtkV2Mouse,
+    &DarkrimHeadset,
+    &KzziKeyboard,
+    &BigbigwonGamepad,
+];

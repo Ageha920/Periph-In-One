@@ -57,7 +57,8 @@ Rust + Slint，使用软件渲染，无需 Python 或 WebView2 运行时。当�
 
 | 设备 / 接收器 | 匹配标识 | 当前边界 |
 | --- | --- | --- |
-| ATK / VXE 鼠标 | `373B:1216`，Usage Page `FF05` / `FF02` | 已有该接收器的电量实测记录 |
+| ATK / VXE 鼠标（FF05 家族） | VID `373B`，Usage Page `FF05:0001`，89 个 PID（`1216` 实测，另有 `FF02` 回退接口） | `1216` 已有电量实测记录；其余 PID 取自 ATK HUB 设备表，已实现未实测 |
+| ATK V2 鼠标（FF04 家族） | VID `373B` / `3554`（Dragonfly），Usage Page `FF04:0002`，共 191 个 PID | 协议取自 ATK HUB 静态分析（feature report），已实现未实测 |
 | DARKRIM SHADOW 耳机 | `3654:6901`，`FF02:0002` | 已实现协议与解析测试，待补当前版本真机验收 |
 | KZZI / Compx 键盘 | `3554:FA09`，`FF02:0002` | K75 身份识别已验证；该机固件未返回电量，显示 `—`；其他型号依固件而定 |
 | BIGBIG WON / Zikway 手柄 | VID `413D`，`FF7A:0001`；已观察到 PID `2104` / `2106` | 烈风 GALE 已有电量实测记录；待机或未连接时可能不响应，唤醒后可重试 |

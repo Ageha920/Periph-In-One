@@ -30,6 +30,44 @@ pub fn atk_ff02_battery(report: &[u8]) -> Option<u8> {
     (report.len() > 6 && report[6] <= 100).then(|| report[6])
 }
 
+/// ATK FF04 (V2 mouse) family: 16-byte frames exchanged as feature reports
+/// with report id 8 on usage page FF04/2. The checksum covers the report id
+/// plus the first 15 frame bytes: 0x55 - ((0x08 + sum) & 0xFF), mirroring
+/// the ATK HUB's Ke command base.
+pub fn atk_ff04_request(command_id: u8) -> [u8; 17] {
+    let mut report = [0; 17];
+    report[0] = 8;
+    report[1] = command_id;
+    report[16] = 0x55u8.wrapping_sub(
+        report[..16]
+            .iter()
+            .fold(0u8, |sum, &byte| sum.wrapping_add(byte)),
+    );
+    report
+}
+
+/// Battery query for the FF04 family: GetBatteryLevel (command 4).
+pub fn atk_ff04_battery_request() -> [u8; 17] {
+    atk_ff04_request(0x04)
+}
+
+/// FF04 battery reply parsed from the 17-byte feature buffer: command echo
+/// at byte 1, dataValidLen at 5, level at 6, charging flag at 7 (the vendor's
+/// data[0]/data[1]); the big-endian voltage in 8..10 is ignored. Returns
+/// (level, charging).
+pub fn atk_ff04_battery(report: &[u8]) -> Option<(u8, u8)> {
+    if report.len() < 17 || report[1] != 0x04 {
+        return None;
+    }
+    let sum = report[..16]
+        .iter()
+        .fold(0u8, |sum, &byte| sum.wrapping_add(byte));
+    if sum.wrapping_add(report[16]) != 0x55 {
+        return None;
+    }
+    (report[6] <= 100).then_some((report[6], report[7]))
+}
+
 pub fn crc16(data: &[u8]) -> u16 {
     let mut crc = 0xffff_u16;
     for &byte in data {

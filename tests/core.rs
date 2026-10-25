@@ -92,6 +92,44 @@ fn atk_ff02_fallback_frame_and_level_gate() {
 }
 
 #[test]
+fn atk_ff04_battery_frame_and_reply_parse() {
+    // Driver-derived wiring (ATK HUB Ke base): report id 8, command 4,
+    // checksum 0x55 - (8 + 4) = 0x49.
+    let request = atk_ff04_battery_request();
+    assert_eq!(request.len(), 17);
+    assert_eq!(&request[..2], &[0x08, 0x04]);
+    assert_eq!(request[16], 0x49);
+    assert!(request[2..16].iter().all(|&byte| byte == 0));
+
+    let checksum = |reply: &[u8; 17]| {
+        0x55u8.wrapping_sub(reply[..16].iter().fold(0u8, |sum, &b| sum.wrapping_add(b)))
+    };
+    // Reply: command echo 4, dataValidLen 2, level 88, charging 1, voltage
+    // 0x012C ignored.
+    let mut reply = [0u8; 17];
+    reply[0] = 8;
+    reply[1] = 0x04;
+    reply[5] = 2;
+    reply[6] = 88;
+    reply[7] = 1;
+    reply[8..10].copy_from_slice(&[0x01, 0x2c]);
+    reply[16] = checksum(&reply);
+    assert_eq!(atk_ff04_battery(&reply), Some((88, 1)));
+
+    reply[16] ^= 1;
+    assert_eq!(atk_ff04_battery(&reply), None);
+    reply[16] = checksum(&reply);
+    reply[1] = 0x10;
+    assert_eq!(atk_ff04_battery(&reply), None);
+    reply[1] = 0x04;
+    reply[6] = 101;
+    reply[16] = checksum(&reply);
+    assert_eq!(atk_ff04_battery(&reply), None);
+    assert_eq!(atk_ff04_battery(&reply[..10]), None);
+    assert_eq!(atk_ff04_battery(&[]), None);
+}
+
+#[test]
 fn kzzi_requests_carry_the_receiver_checksum() {
     let battery = kzzi_request(0x4a);
     assert_eq!(&battery[..4], &[0x13, 0x4a, 0, 0]);

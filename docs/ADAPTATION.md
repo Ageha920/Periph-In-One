@@ -12,7 +12,7 @@
 | 传输与拓扑 | `src/devices.rs` | `open_pair` / `send` / `drain` / `KzziLink` 传输件，ContainerId 分组，`port_location`，扫描编排 |
 | 身份 | `src/model.rs` | 四级身份链与历史合并，厂商无关，新适配不改此文件 |
 
-现有家族：ATK FF05/FF02、DARKRIM TLV、KZZI/Compx 0x13、BIGBIG WON(Zikway) FF7A A5。
+现有家族：ATK FF05/FF02、ATK FF04（V2 鼠标，含 CompX 3554 段）、DARKRIM TLV、KZZI/Compx 0x13、BIGBIG WON(Zikway) FF7A A5。
 
 规则：
 
@@ -56,11 +56,23 @@
 
 ## 7. 范例
 
-7.1 待复查核验后填入；7.2 与 7.3 已随复查落位（2026-10-25）。
+三节均已随复查落位（2026-10-25）：7.1 五条 PASS 加一条表格污染清洗后采用，7.2 五条 PASS 一条修正后采用，7.3 七条全 PASS。
 
-### 7.1 ATK HUB（待填）
+### 7.1 ATK HUB（跨家族品牌）
 
-Electron 明文 JS 设备表，跨 373B / CompX 3554 / Zikway 413D 家族。
+来源：ATK HUB v3.2.30 Electron 应用两个 asar 包静态分析（app.asar 5956965c…347a、main/app.asar 1e4b689f…b56b），复查五条 PASS、设备表一条确认污染并清洗后采用。
+
+**家族版图**：ATK 自有 VID 0x373B 按 Usage Page 分家族——FF05:0001 鼠标/接收器线（89 个 PID；同页还有显示器、数位板、掌机、眼镜、音箱、摄像头、坞站、麦克风外设线，明确不收录）、FF04:0002 V2 鼠标线（179 个 PID）、FF60/FF10 BYKB 键盘、keyLinker（413D 的 AXEPro 同走此通道）、FFB2 Nearlink、0x0C 耳机 MB 协议等。另有 CompX VID 0x3554 的 Dragonfly 线（FF04:0002，12 个 PID）：与 KZZI 的 0x13 接收器协议同 VID 不同家族——共享 VID 不等于共享协议，识别必须锚定 Usage Page 与帧格式，这是第 2 节公模规则的活例子。
+
+**FF05 鼠标帧**（1216 已实测）：63 字节输出报告、reportId 8；[0] = sum(bytes[1..62]) & 0xFF、[1] = cmdCode 0x72、[5] = commandId（应答匹配键）；GetBatteryLevel=7 应答 data[0] 为电量，GetBatteryChargingStatus=15 应答 1 为充电中。与主应用 atk_sub_request / atk_battery 逐字段一致。
+
+**FF04 V2 鼠标帧**（已实现未实测）：16 字节帧走 feature report（reportId 8），[0] = commandId、[1] = commandStatus、[2..3] = EEPROM 地址大端、[4] = dataValidLen、[5..14] = 数据、[15] = 校验 = 0x55 - ((0x08 + sum(bytes[0..14])) & 0xFF)；GetBatteryLevel=4，应答 data[0] = 电量、data[1] = 充电状态、data[2..3] = 电压大端。实现在 protocol.rs 的 atk_ff04_* 与 vendor/atk_v2.rs。0x3554 的 FF02 早期批次段（0xF31F、0xF400-0xF410）同协议只是推断，无接口证据，不收录。
+
+**每台身份（记录档，未实现）**：BYKB 键盘 UUID 命令 encode(130,1,0×6)，应答 8 字节按大端折叠为 48 位（0x12/0x14 前缀为三模机型）；FF04 GetMouseCIDMID=16（CID/MID 加 uniqueId，设备表以预期 CID,MID 做型号一致性校验）；FF05 MouseCidMid=74 与 GetChipId=71；keyLinker 设备探针（应答字节 19/20 拼 0x2025）。
+
+**写命令（记录档，LIGHTING/CONFIGURATION 预留位）**：FF05 SetLEDLightEffect=20、接收器 133/134；FF04 Set4KRGBMode=20、SetDongleLightMode=24、EEPROM 档位颜色地址 44..77（成对 CRC 槽）；BYKB 区域灯色 encode(4, 区, [参数,R,G,B]) 与矩阵 get/write_custom_led_matrix=10/11；耳机 EQ / 麦克风 / 环绕域。
+
+**复查教训（表污染）**：原报告 FF05 鼠标/接收器表（122 行）混入 31 个外设 PID 与 1 个 OTA 裸 dataFilter 对象——成表脚本只排除了 monitor/tablet/handheld 三类标记。清洗改以对象自带的专属 ID 字段（monitorID / tabletID / handheldID / aiGlassesID / speakerID / webcamID / dockID / microphoneID）与 meta.deviceType 为准，而非仅 firmwareMark。这正是第 3 节档位纪律的价值：进 matcher 前逐条核对，清洗后 89 个 PID 全部有独立提取证据。
 
 ### 7.2 KZZI 258A 家族（Beiying OEM 双传输线）
 
