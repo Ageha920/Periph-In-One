@@ -16,6 +16,20 @@ pub fn atk_battery(report: &[u8]) -> Option<u8> {
         .then(|| report[7])
 }
 
+/// FF02 fallback interface of the same ATK receiver. Preserves the verified
+/// Python report construction: report id 8, command 4, 17 bytes.
+pub fn atk_ff02_request() -> [u8; 17] {
+    let mut report = [0; 17];
+    report[0] = 8;
+    report[1] = 4;
+    report
+}
+
+/// FF02 battery reply: level in byte 6.
+pub fn atk_ff02_battery(report: &[u8]) -> Option<u8> {
+    (report.len() > 6 && report[6] <= 100).then(|| report[6])
+}
+
 pub fn crc16(data: &[u8]) -> u16 {
     let mut crc = 0xffff_u16;
     for &byte in data {

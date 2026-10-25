@@ -1,4 +1,4 @@
-use crate::{model::Reading, protocol};
+use crate::{model::Reading, vendor};
 use hidapi::{DeviceInfo, HidApi, HidDevice};
 use serde::Serialize;
 use std::{
@@ -221,24 +221,6 @@ fn port_location(info: &DeviceInfo) -> String {
     }
 }
 
-fn supported(info: &DeviceInfo) -> bool {
-    (info.vendor_id() == 0x373b
-        && info.product_id() == 0x1216
-        && matches!(info.usage_page(), 0xff05 | 0xff02))
-        || (info.vendor_id() == 0x3654
-            && info.product_id() == 0x6901
-            && info.usage_page() == 0xff02
-            && info.usage() == 2)
-        || (info.vendor_id() == 0x3554
-            && info.product_id() == 0xfa09
-            && info.usage_page() == 0xff02
-            && info.usage() == 2)
-        // Zikway/BIGBIG WON controllers: the vendor interface keeps usage page
-        // FF7A across firmware personalities (2104 linked, 2106 idle), so the
-        // PID is deliberately not pinned.
-        || (info.vendor_id() == 0x413d && info.usage_page() == 0xff7a && info.usage() == 1)
-}
-
 #[derive(Debug, Serialize)]
 pub struct UsbIdentifiers {
     pub hardware_name: String,
@@ -248,10 +230,14 @@ pub struct UsbIdentifiers {
 
 fn receiver_interfaces(api: &HidApi) -> BTreeMap<String, Vec<&DeviceInfo>> {
     let mut groups: BTreeMap<String, Vec<&DeviceInfo>> = BTreeMap::new();
-    for info in api.device_list().filter(|d| supported(d)) {
+    for info in api
+        .device_list()
+        .filter(|d| vendor::ADAPTERS.iter().any(|adapter| adapter.matches(d)))
+    {
         groups.entry(container_id(info)).or_default().push(info);
     }
     for interfaces in groups.values_mut() {
+        // FF05 first: the ATK dongle's protocol interface.
         interfaces.sort_by_key(|d| d.usage_page() != 0xff05);
     }
     groups
@@ -274,7 +260,7 @@ pub fn enumerate_identifiers() -> Result<Vec<UsbIdentifiers>, String> {
         .collect())
 }
 
-fn open_pair(api: &HidApi, info: &DeviceInfo) -> Result<(HidDevice, HidDevice), String> {
+pub(crate) fn open_pair(api: &HidApi, info: &DeviceInfo) -> Result<(HidDevice, HidDevice), String> {
     // Keep input on an independent overlapped handle; never mix an outstanding
     // read with writes/IOCTL on the same handle.
     let reader = api.open_path(info.path()).map_err(|e| e.to_string())?;
@@ -308,73 +294,6 @@ pub fn drain(reader: &HidDevice) {
             break;
         }
     }
-}
-
-fn mouse(api: &HidApi, info: &DeviceInfo) -> Result<u8, String> {
-    let (reader, writer) = open_pair(api, info)?;
-    let mut buffer = [0; 256];
-    for _ in 0..3 {
-        drain(&reader);
-        if info.usage_page() == 0xff05 {
-            send(&writer, &protocol::atk_request())?;
-        } else {
-            let mut request = [0; 17];
-            request[0] = 8;
-            request[1] = 4;
-            // Preserves the verified Python report construction (17 bytes).
-            send(&writer, &request)?;
-        }
-        let end = Instant::now() + Duration::from_millis(650);
-        while Instant::now() < end {
-            let n = reader
-                .read_timeout(&mut buffer, 120)
-                .map_err(|e| e.to_string())?;
-            if n == 0 {
-                continue;
-            }
-            let battery = if info.usage_page() == 0xff05 {
-                protocol::atk_battery(&buffer[..n])
-            } else {
-                (n > 6 && buffer[6] <= 100).then(|| buffer[6])
-            };
-            if let Some(level) = battery {
-                return Ok(level);
-            }
-        }
-    }
-    Err("鼠标未响应，请移动鼠标后刷新".into())
-}
-
-fn headset(api: &HidApi, info: &DeviceInfo) -> Result<(Option<u8>, String), String> {
-    let (reader, writer) = open_pair(api, info)?;
-    let mut battery = None;
-    let mut name = String::new();
-    let mut buffer = [0; 256];
-    for (seq, kind) in [(0, 1), (1, 2)] {
-        drain(&reader);
-        send(&writer, &protocol::darkrim_query(seq, kind))?;
-        let end = Instant::now() + Duration::from_millis(450);
-        while Instant::now() < end {
-            let n = reader
-                .read_timeout(&mut buffer, 100)
-                .map_err(|e| e.to_string())?;
-            let report = protocol::restore_darkrim_report_id(&buffer[..n]);
-            if let Some(tlvs) = protocol::darkrim_tlvs(&report, seq) {
-                for (key, value) in tlvs {
-                    if key == 1 && !value.is_empty() && value[0] <= 100 {
-                        battery = Some(value[0]);
-                    }
-                    if key == 2 {
-                        name = String::from_utf8_lossy(value)
-                            .trim_matches(char::from(0))
-                            .trim()
-                            .to_string();
-                    }
-                }
-            }
-        }
-    }
-    Ok((battery, name))
 }
 
 /// KZZI keyboards behind a Compx 2.4G receiver. This interface only answers
@@ -508,186 +427,28 @@ impl Drop for KzziLink {
     }
 }
 
-/// KZZI keyboards behind a Compx 2.4G receiver: the receiver answers identity
-/// itself, battery queries are relayed to the keyboard and only models whose
-/// firmware implements them reply.
-fn keyboard(info: &DeviceInfo) -> Result<(Option<u8>, String), String> {
-    let link = KzziLink::open(&info.path().to_string_lossy())?;
-    let mut buffer = [0u8; 64];
-    let mut name = String::new();
-    for _ in 0..3 {
-        link.drain();
-        link.send(&protocol::kzzi_identity_request())?;
-        let end = Instant::now() + Duration::from_millis(600);
-        while name.is_empty() && Instant::now() < end {
-            if let Some(n) = link.read(&mut buffer, Duration::from_millis(120))
-                && let Some(psd) = protocol::kzzi_identity(&buffer[..n])
-            {
-                name = protocol::kzzi_model_name(&psd)
-                    .unwrap_or("无线键盘")
-                    .to_string();
-            }
-        }
-        if !name.is_empty() {
-            break;
-        }
-    }
-    for _ in 0..3 {
-        link.drain();
-        link.send(&protocol::kzzi_request(0x4a))?;
-        let end = Instant::now() + Duration::from_millis(900);
-        while Instant::now() < end {
-            if let Some(n) = link.read(&mut buffer, Duration::from_millis(120))
-                && let Some((level, _)) = protocol::kzzi_battery(&buffer[..n])
-            {
-                return Ok((Some(level), name));
-            }
-        }
-    }
-    Ok((None, name))
-}
-
-/// BIGBIG WON controllers (GALE 烈风 family and other Zikway models). The
-/// vendor interface answers GetDevicePowerInfo only while the controller is
-/// linked and running its composite gamepad personality; asleep or unlinked
-/// devices enumerate but stay silent. While linked, GetUUID reports the
-/// 8-byte per-unit identity that anchors the record across personalities
-/// and ports.
-fn gamepad(api: &HidApi, info: &DeviceInfo) -> Result<(Option<u8>, String), String> {
-    let (reader, writer) = open_pair(api, info)?;
-    let mut buffer = [0; 256];
-    for _ in 0..3 {
-        drain(&reader);
-        send(&writer, &protocol::bigbigwon_request())?;
-        let end = Instant::now() + Duration::from_millis(650);
-        while Instant::now() < end {
-            let n = reader
-                .read_timeout(&mut buffer, 120)
-                .map_err(|e| e.to_string())?;
-            if n == 0 {
-                continue;
-            }
-            if let Some(level) = protocol::bigbigwon_battery(&buffer[..n]) {
-                return Ok((Some(level), gamepad_uid(&reader, &writer)));
-            }
-        }
-    }
-    Err("手柄未响应，请唤醒手柄后刷新".into())
-}
-
-fn gamepad_uid(reader: &HidDevice, writer: &HidDevice) -> String {
-    let mut buffer = [0u8; 256];
-    for _ in 0..2 {
-        drain(reader);
-        if send(writer, &protocol::bigbigwon_uuid_request()).is_err() {
-            return String::new();
-        }
-        let end = Instant::now() + Duration::from_millis(400);
-        while Instant::now() < end {
-            let Ok(n) = reader.read_timeout(&mut buffer, 80) else {
-                return String::new();
-            };
-            if n == 0 {
-                continue;
-            }
-            if let Some(uuid) = protocol::bigbigwon_uuid(&buffer[..n]) {
-                return uuid.iter().map(|b| format!("{b:02x}")).collect();
-            }
-        }
-    }
-    String::new()
-}
-
 pub fn scan() -> Result<Vec<Reading>, String> {
     let api = HidApi::new().map_err(|_| "暂时无法读取设备，请稍后刷新".to_string())?;
     let mut result = Vec::new();
     for (_, interfaces) in receiver_interfaces(&api) {
         let info = interfaces[0];
-        let vendor = info.vendor_id();
-        let mut reading = Reading {
+        let Some(adapter) = vendor::ADAPTERS.iter().find(|a| a.matches(info)) else {
+            continue;
+        };
+        let outcome = adapter.read(&api, info);
+        result.push(Reading {
             physical_id: port_location(info),
-            kind: if vendor == 0x373b {
-                "mouse"
-            } else if vendor == 0x3554 {
-                "keyboard"
-            } else if vendor == 0x413d {
-                "gamepad"
-            } else {
-                "headset"
-            }
-            .into(),
-            hardware_name: info.product_string().unwrap_or("未提供硬件名称").into(),
+            kind: adapter.kind().into(),
+            hardware_name: outcome
+                .hardware_name
+                .unwrap_or_else(|| info.product_string().unwrap_or("未提供硬件名称").into()),
             serial: raw_serial_number(info),
-            uid: String::new(),
+            uid: outcome.uid,
             vid: info.vendor_id(),
             pid: info.product_id(),
-            battery: None,
-            message: String::new(),
-        };
-        if vendor == 0x373b {
-            match mouse(&api, info) {
-                Ok(level) => {
-                    reading.battery = Some(level);
-                    reading.message = "已连接".into();
-                }
-                Err(error) => {
-                    reading.message = if error.contains("未响应") {
-                        error
-                    } else {
-                        "读取失败，请重新连接设备后刷新".into()
-                    }
-                }
-            }
-        } else if vendor == 0x3554 {
-            match keyboard(info) {
-                Ok((battery, name)) => {
-                    let identified = !name.is_empty();
-                    reading.battery = battery;
-                    if identified {
-                        reading.hardware_name = name;
-                    }
-                    reading.message = if battery.is_some() || identified {
-                        "已连接"
-                    } else {
-                        "键盘未响应，请确认键盘已开机"
-                    }
-                    .into();
-                }
-                Err(_) => reading.message = "读取失败，请重新连接设备后刷新".into(),
-            }
-        } else if vendor == 0x413d {
-            match gamepad(&api, info) {
-                Ok((level, uid)) => {
-                    reading.battery = level;
-                    reading.uid = uid;
-                    reading.message = "已连接".into();
-                }
-                Err(error) => {
-                    reading.message = if error.contains("未响应") {
-                        error
-                    } else {
-                        "读取失败，请重新连接设备后刷新".into()
-                    }
-                }
-            }
-        } else {
-            match headset(&api, info) {
-                Ok((battery, name)) => {
-                    reading.battery = battery;
-                    if !name.is_empty() {
-                        reading.hardware_name = name;
-                    }
-                    reading.message = if battery.is_some() {
-                        "已连接"
-                    } else {
-                        "耳机未响应，请检查电源和连接"
-                    }
-                    .into();
-                }
-                Err(_) => reading.message = "读取失败，请重新连接设备后刷新".into(),
-            }
-        }
-        result.push(reading);
+            battery: outcome.battery,
+            message: outcome.message,
+        });
     }
     result.sort_by_key(|r| {
         (

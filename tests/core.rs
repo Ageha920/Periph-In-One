@@ -78,6 +78,20 @@ fn mouse_requires_correct_reply_and_valid_percentage() {
 }
 
 #[test]
+fn atk_ff02_fallback_frame_and_level_gate() {
+    let request = atk_ff02_request();
+    assert_eq!(request.len(), 17);
+    assert_eq!(&request[..2], &[8, 4]);
+    assert!(request[2..].iter().all(|&byte| byte == 0));
+    let mut reply = [0u8; 7];
+    reply[6] = 76;
+    assert_eq!(atk_ff02_battery(&reply), Some(76));
+    reply[6] = 101;
+    assert_eq!(atk_ff02_battery(&reply), None);
+    assert_eq!(atk_ff02_battery(&reply[..6]), None);
+}
+
+#[test]
 fn kzzi_requests_carry_the_receiver_checksum() {
     let battery = kzzi_request(0x4a);
     assert_eq!(&battery[..4], &[0x13, 0x4a, 0, 0]);
