@@ -420,7 +420,10 @@ fn bigbigwon_uuid_parses_the_captured_identity_reply() {
     corrupt[11] ^= 1;
     assert_eq!(bigbigwon_uuid(&corrupt), None);
     // Wrong opcode echo and truncated frames.
-    assert_eq!(bigbigwon_uuid(&[0xa5, 0x0c, 0x04, 0, 0, 0, 0, 0, 0, 0, 0, 0]), None);
+    assert_eq!(
+        bigbigwon_uuid(&[0xa5, 0x0c, 0x04, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+        None
+    );
     assert_eq!(bigbigwon_uuid(&[0xa5, 0x0c, 0xef, 0x42]), None);
     assert_eq!(bigbigwon_uuid(&[]), None);
 }
@@ -429,7 +432,12 @@ fn bigbigwon_uuid_parses_the_captured_identity_reply() {
 fn uid_anchors_identity_across_personalities_and_silent_docking() {
     let first = model::merge_readings(
         &[],
-        vec![gamepad_reading("port-1", "423bca92863cba8d", 0x2104, Some(91))],
+        vec![gamepad_reading(
+            "port-1",
+            "423bca92863cba8d",
+            0x2104,
+            Some(91),
+        )],
         1,
     );
     assert!(first[0].saved.id.starts_with("uid:"));
@@ -437,11 +445,8 @@ fn uid_anchors_identity_across_personalities_and_silent_docking() {
     let mut saved: Vec<_> = first.into_iter().map(|d| d.saved).collect();
     saved[0].alias = "客厅手柄".into();
     // Docked on the same port: idle personality pid, silent, no uid.
-    let second = model::merge_readings(
-        &saved,
-        vec![gamepad_reading("port-1", "", 0x2106, None)],
-        2,
-    );
+    let second =
+        model::merge_readings(&saved, vec![gamepad_reading("port-1", "", 0x2106, None)], 2);
     assert_eq!(second.len(), 1);
     assert!(second[0].present);
     assert_eq!(second[0].saved.pid, 0x2106);
@@ -450,7 +455,12 @@ fn uid_anchors_identity_across_personalities_and_silent_docking() {
     let saved: Vec<_> = second.into_iter().map(|d| d.saved).collect();
     let third = model::merge_readings(
         &saved,
-        vec![gamepad_reading("port-1", "423bca92863cba8d", 0x2104, Some(88))],
+        vec![gamepad_reading(
+            "port-1",
+            "423bca92863cba8d",
+            0x2104,
+            Some(88),
+        )],
         3,
     );
     assert_eq!(third.len(), 1);
@@ -467,7 +477,12 @@ fn a_uid_reading_adopts_the_earlier_docked_record() {
     saved[0].alias = "客厅手柄".into();
     let second = model::merge_readings(
         &saved,
-        vec![gamepad_reading("port-1", "423bca92863cba8d", 0x2104, Some(90))],
+        vec![gamepad_reading(
+            "port-1",
+            "423bca92863cba8d",
+            0x2104,
+            Some(90),
+        )],
         2,
     );
     assert_eq!(second.len(), 1);

@@ -7,7 +7,10 @@ use std::{
 };
 use windows_sys::Win32::{
     Devices::HumanInterfaceDevice::{HidD_GetSerialNumberString, HidD_SetOutputReport},
-    Devices::{DeviceAndDriverInstallation::*, Properties::{DEVPKEY_Device_ContainerId, DEVPKEY_Device_Parent}},
+    Devices::{
+        DeviceAndDriverInstallation::*,
+        Properties::{DEVPKEY_Device_ContainerId, DEVPKEY_Device_Parent},
+    },
     Foundation::{
         CloseHandle, DEVPROPKEY, GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
     },
@@ -56,78 +59,95 @@ fn raw_serial_number(info: &DeviceInfo) -> String {
     }
 }
 
-/// Resolve the devnode behind a HID interface and read one device property
-/// into `buffer`, returning the property size in bytes.
-fn device_property(info: &DeviceInfo, key: &DEVPROPKEY, buffer: &mut [u8]) -> Option<usize> {
+/// Run `probe` against a fresh device-info set that is always destroyed.
+fn with_device_set<T>(probe: impl FnOnce(HDEVINFO) -> Option<T>) -> Option<T> {
     unsafe {
         let set = SetupDiCreateDeviceInfoList(std::ptr::null(), std::ptr::null_mut());
         if set == -1 {
             return None;
         }
-        let result = (|| {
-            let mut interface = SP_DEVICE_INTERFACE_DATA {
-                cbSize: std::mem::size_of::<SP_DEVICE_INTERFACE_DATA>() as u32,
-                ..std::mem::zeroed()
-            };
-            if SetupDiOpenDeviceInterfaceW(
-                set,
-                wide(&info.path().to_string_lossy()).as_ptr(),
-                0,
-                &mut interface,
-            ) == 0
-            {
-                return None;
-            }
-            let mut needed = 0;
-            SetupDiGetDeviceInterfaceDetailW(
-                set,
-                &interface,
-                std::ptr::null_mut(),
-                0,
-                &mut needed,
-                std::ptr::null_mut(),
-            );
-            if needed == 0 {
-                return None;
-            }
-            // Aligned storage for the variable-size structure.
-            let mut detail = vec![0u64; (needed as usize).div_ceil(8)];
-            let detail_ptr = detail
-                .as_mut_ptr()
-                .cast::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>();
-            (*detail_ptr).cbSize = std::mem::size_of::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>() as u32;
-            let mut device = SP_DEVINFO_DATA {
-                cbSize: std::mem::size_of::<SP_DEVINFO_DATA>() as u32,
-                ..std::mem::zeroed()
-            };
-            if SetupDiGetDeviceInterfaceDetailW(
-                set,
-                &interface,
-                detail_ptr,
-                needed,
-                std::ptr::null_mut(),
-                &mut device,
-            ) == 0
-            {
-                return None;
-            }
-            let mut kind = 0;
-            let mut size = 0;
-            (SetupDiGetDevicePropertyW(
-                set,
-                &device,
-                key,
-                &mut kind,
-                buffer.as_mut_ptr(),
-                buffer.len() as u32,
-                &mut size,
-                0,
-            ) != 0)
-                .then_some(size as usize)
-        })();
+        let result = probe(set);
         SetupDiDestroyDeviceInfoList(set);
         result
     }
+}
+
+/// Read one device property from a devnode already opened in `set`, into
+/// `buffer`, returning the property size in bytes.
+fn node_property(
+    set: HDEVINFO,
+    device: &SP_DEVINFO_DATA,
+    key: &DEVPROPKEY,
+    buffer: &mut [u8],
+) -> Option<usize> {
+    let mut kind = 0;
+    let mut size = 0;
+    (unsafe {
+        SetupDiGetDevicePropertyW(
+            set,
+            device,
+            key,
+            &mut kind,
+            buffer.as_mut_ptr(),
+            buffer.len() as u32,
+            &mut size,
+            0,
+        )
+    } != 0)
+        .then_some(size as usize)
+}
+
+/// Resolve the devnode behind a HID interface and read one device property.
+fn device_property(info: &DeviceInfo, key: &DEVPROPKEY, buffer: &mut [u8]) -> Option<usize> {
+    with_device_set(|set| unsafe {
+        let mut interface = SP_DEVICE_INTERFACE_DATA {
+            cbSize: std::mem::size_of::<SP_DEVICE_INTERFACE_DATA>() as u32,
+            ..std::mem::zeroed()
+        };
+        if SetupDiOpenDeviceInterfaceW(
+            set,
+            wide(&info.path().to_string_lossy()).as_ptr(),
+            0,
+            &mut interface,
+        ) == 0
+        {
+            return None;
+        }
+        let mut needed = 0;
+        SetupDiGetDeviceInterfaceDetailW(
+            set,
+            &interface,
+            std::ptr::null_mut(),
+            0,
+            &mut needed,
+            std::ptr::null_mut(),
+        );
+        if needed == 0 {
+            return None;
+        }
+        // Aligned storage for the variable-size structure.
+        let mut detail = vec![0u64; (needed as usize).div_ceil(8)];
+        let detail_ptr = detail
+            .as_mut_ptr()
+            .cast::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>();
+        (*detail_ptr).cbSize = std::mem::size_of::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>() as u32;
+        let mut device = SP_DEVINFO_DATA {
+            cbSize: std::mem::size_of::<SP_DEVINFO_DATA>() as u32,
+            ..std::mem::zeroed()
+        };
+        if SetupDiGetDeviceInterfaceDetailW(
+            set,
+            &interface,
+            detail_ptr,
+            needed,
+            std::ptr::null_mut(),
+            &mut device,
+        ) == 0
+        {
+            return None;
+        }
+        node_property(set, &device, key, buffer)
+    })
 }
 
 /// Windows groups all interfaces of a physical receiver using its ContainerId.
@@ -155,43 +175,17 @@ fn property_string(buffer: &[u8]) -> String {
 
 /// Read one device property from a devnode addressed by instance id.
 fn instance_property(instance: &[u16], key: &DEVPROPKEY, buffer: &mut [u8]) -> Option<usize> {
-    unsafe {
-        let set = SetupDiCreateDeviceInfoList(std::ptr::null(), std::ptr::null_mut());
-        if set == -1 {
+    with_device_set(|set| unsafe {
+        let mut device = SP_DEVINFO_DATA {
+            cbSize: std::mem::size_of::<SP_DEVINFO_DATA>() as u32,
+            ..std::mem::zeroed()
+        };
+        if SetupDiOpenDeviceInfoW(set, instance.as_ptr(), std::ptr::null_mut(), 0, &mut device) == 0
+        {
             return None;
         }
-        let result = (|| {
-            let mut device = SP_DEVINFO_DATA {
-                cbSize: std::mem::size_of::<SP_DEVINFO_DATA>() as u32,
-                ..std::mem::zeroed()
-            };
-            if SetupDiOpenDeviceInfoW(
-                set,
-                instance.as_ptr(),
-                std::ptr::null_mut(),
-                0,
-                &mut device,
-            ) == 0
-            {
-                return None;
-            }
-            let mut kind = 0;
-            let mut size = 0;
-            (SetupDiGetDevicePropertyW(
-                set,
-                &device,
-                key,
-                &mut kind,
-                buffer.as_mut_ptr(),
-                buffer.len() as u32,
-                &mut size,
-                0,
-            ) != 0)
-                .then_some(size as usize)
-        })();
-        SetupDiDestroyDeviceInfoList(set);
-        result
-    }
+        node_property(set, &device, key, buffer)
+    })
 }
 
 /// The physical USB node's location suffix (e.g. 6&3af0f9ce&0&8) tracks the
@@ -288,7 +282,7 @@ fn open_pair(api: &HidApi, info: &DeviceInfo) -> Result<(HidDevice, HidDevice), 
     Ok((reader, writer))
 }
 
-fn send(writer: &HidDevice, data: &[u8]) -> Result<(), String> {
+pub fn send(writer: &HidDevice, data: &[u8]) -> Result<(), String> {
     writer
         .send_output_report(data)
         .or_else(|_| {
@@ -306,7 +300,7 @@ fn send(writer: &HidDevice, data: &[u8]) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-fn drain(reader: &HidDevice) {
+pub fn drain(reader: &HidDevice) {
     let mut bytes = [0u8; 256];
     // Bounded even when a device continuously sends input.
     for _ in 0..32 {
@@ -387,14 +381,14 @@ fn headset(api: &HidApi, info: &DeviceInfo) -> Result<(Option<u8>, String), Stri
 /// requests written through the control endpoint (HidD_SetOutputReport) and
 /// hidapi's buffer handling fails there (error 1784), so the exchange runs on
 /// raw Windows handles: one handle for writes, one overlapped handle for reads.
-struct KzziLink {
+pub struct KzziLink {
     writer: *mut std::ffi::c_void,
     reader: *mut std::ffi::c_void,
     event: *mut std::ffi::c_void,
 }
 
 impl KzziLink {
-    fn open(path: &str) -> Result<Self, String> {
+    pub fn open(path: &str) -> Result<Self, String> {
         let path = wide(path);
         let writer = unsafe {
             CreateFileW(
@@ -440,7 +434,7 @@ impl KzziLink {
         })
     }
 
-    fn send(&self, frame: &[u8; 20]) -> Result<(), String> {
+    pub fn send(&self, frame: &[u8; 20]) -> Result<(), String> {
         let ok =
             unsafe { HidD_SetOutputReport(self.writer, frame.as_ptr().cast(), frame.len() as u32) };
         if ok {
@@ -460,7 +454,7 @@ impl KzziLink {
         }
     }
 
-    fn read(&self, buffer: &mut [u8], timeout: Duration) -> Option<usize> {
+    pub fn read(&self, buffer: &mut [u8], timeout: Duration) -> Option<usize> {
         let mut pending: OVERLAPPED = unsafe { std::mem::zeroed() };
         pending.hEvent = self.event;
         let mut read = 0u32;
@@ -493,7 +487,7 @@ impl KzziLink {
         }
     }
 
-    fn drain(&self) {
+    pub fn drain(&self) {
         let mut buffer = [0u8; 64];
         for _ in 0..32 {
             if self.read(&mut buffer, Duration::from_millis(8)).is_none() {

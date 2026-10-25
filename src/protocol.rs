@@ -1,9 +1,14 @@
 //! Wire formats ported from the verified Python readers. No device I/O here.
 
-pub fn atk_request() -> [u8; 64] {
+/// FF05 vendor request for subcommand `sub`; 0x07 reads the battery.
+pub fn atk_sub_request(sub: u8) -> [u8; 64] {
     let mut report = [0; 64];
-    report[..8].copy_from_slice(&[0x08, 0x7d, 0x72, 0x02, 0x00, 0x01, 0x07, 0x01]);
+    report[..8].copy_from_slice(&[0x08, 0x7d, 0x72, 0x02, 0x00, 0x01, sub, 0x01]);
     report
+}
+
+pub fn atk_request() -> [u8; 64] {
+    atk_sub_request(0x07)
 }
 
 pub fn atk_battery(report: &[u8]) -> Option<u8> {
@@ -84,17 +89,22 @@ pub fn kzzi_request(command: u8) -> [u8; 20] {
     frame
 }
 
-/// The identity request answers with npkg=1 in byte 2 on this receiver.
-pub fn kzzi_identity_request() -> [u8; 20] {
+/// Identity request asking for package `npkg` of the identity reply.
+pub fn kzzi_package_request(npkg: u8) -> [u8; 20] {
     let mut frame = kzzi_request(0x05);
-    frame[2] = 1;
+    frame[2] = npkg;
     frame[19] = frame[..19]
         .iter()
         .fold(0u8, |sum, &byte| sum.wrapping_add(byte));
     frame
 }
 
-fn kzzi_frame_ok(report: &[u8]) -> bool {
+/// The identity request answers with npkg=1 in byte 2 on this receiver.
+pub fn kzzi_identity_request() -> [u8; 20] {
+    kzzi_package_request(1)
+}
+
+pub fn kzzi_frame_ok(report: &[u8]) -> bool {
     report.len() == 20
         && report[0] == 0x13
         && report[..19]
@@ -157,10 +167,20 @@ pub fn kzzi_model_name(psd: &[u8]) -> Option<&'static str> {
 /// byte 1 is the total frame length including A5 and the trailing additive sum
 /// of every preceding byte. GetDevicePowerInfo (A5 04 04) answers with
 /// A5 <len> 04 <level> <state> <sum>.
-pub fn bigbigwon_request() -> [u8; 65] {
+/// Short read-only query frame: A5 04 <opcode> <sum>.
+pub fn bigbigwon_short_request(opcode: u8) -> [u8; 65] {
     let mut report = [0; 65];
-    report[1..5].copy_from_slice(&[0xa5, 0x04, 0x04, 0xad]);
+    report[1] = 0xa5;
+    report[2] = 0x04;
+    report[3] = opcode;
+    report[4] = report[1..4]
+        .iter()
+        .fold(0u8, |sum, byte| sum.wrapping_add(*byte));
     report
+}
+
+pub fn bigbigwon_request() -> [u8; 65] {
+    bigbigwon_short_request(0x04)
 }
 
 pub fn bigbigwon_battery(report: &[u8]) -> Option<u8> {

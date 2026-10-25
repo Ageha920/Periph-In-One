@@ -8,33 +8,12 @@
 //! being the wrapping sum of every preceding frame byte. Long payloads come
 //! back as `A4 | length | opcode | index | data | checksum` fragments.
 use hidapi::HidApi;
+use periph_in_one::protocol;
 use std::time::{Duration, Instant};
 
 const VID: u16 = 0x413d;
 const USAGE_PAGE: u16 = 0xff7a;
 const USAGE: u16 = 1;
-
-fn short(opcode: u8) -> [u8; 65] {
-    let mut report = [0u8; 65];
-    report[1] = 0xa5;
-    report[2] = 0x04;
-    report[3] = opcode;
-    report[4] = report[1..4].iter().fold(0u8, |sum, b| sum.wrapping_add(*b));
-    report
-}
-
-/// Copy of the official client's request: A5 0C EF followed by eight zero
-/// bytes (slot selector) and the checksum.
-fn get_uuid() -> [u8; 65] {
-    let mut report = [0u8; 65];
-    report[1] = 0xa5;
-    report[2] = 0x0c;
-    report[3] = 0xef;
-    report[12] = report[1..12]
-        .iter()
-        .fold(0u8, |sum, b| sum.wrapping_add(*b));
-    report
-}
 
 fn checksum_ok(frame: &[u8]) -> bool {
     let total = frame[1] as usize;
@@ -56,7 +35,14 @@ fn dump(label: &str, frame: &[u8]) {
         .map(|b| format!("{b:02X}"))
         .collect::<Vec<_>>()
         .join(" ");
-    println!("{label} [{}] {hex}", if checksum_ok(frame) { "校验通过" } else { "校验存疑" });
+    println!(
+        "{label} [{}] {hex}",
+        if checksum_ok(frame) {
+            "校验通过"
+        } else {
+            "校验存疑"
+        }
+    );
 }
 
 fn main() {
@@ -83,14 +69,22 @@ fn main() {
     };
 
     let mut buffer = [0u8; 256];
+    // Frames come from the app's protocol module; GetUUID mirrors the
+    // official client's A5 0C EF + eight zero selector bytes request.
     let probes: [(&str, [u8; 65]); 7] = [
-        ("GetDevicePowerInfo(04)", short(0x04)),
-        ("GetZkmVersion(0B)", short(0x0b)),
-        ("GetUUID(EF)", get_uuid()),
-        ("GetMode(E2)", short(0xe2)),
-        ("GetProfileSize(D3)", short(0xd3)),
-        ("GetMacroList(D5)", short(0xd5)),
-        ("ReadConfig(D6)", short(0xd6)),
+        (
+            "GetDevicePowerInfo(04)",
+            protocol::bigbigwon_short_request(0x04),
+        ),
+        ("GetZkmVersion(0B)", protocol::bigbigwon_short_request(0x0b)),
+        ("GetUUID(EF)", protocol::bigbigwon_uuid_request()),
+        ("GetMode(E2)", protocol::bigbigwon_short_request(0xe2)),
+        (
+            "GetProfileSize(D3)",
+            protocol::bigbigwon_short_request(0xd3),
+        ),
+        ("GetMacroList(D5)", protocol::bigbigwon_short_request(0xd5)),
+        ("ReadConfig(D6)", protocol::bigbigwon_short_request(0xd6)),
     ];
     let mut answered_total = 0;
     for (label, report) in probes {
