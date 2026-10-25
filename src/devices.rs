@@ -24,7 +24,7 @@ use windows_sys::Win32::{
     },
 };
 
-fn wide(value: &str) -> Vec<u16> {
+pub(crate) fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(Some(0)).collect()
 }
 
@@ -244,10 +244,11 @@ fn receiver_interfaces(api: &HidApi) -> BTreeMap<String, Vec<&DeviceInfo>> {
 }
 
 /// Enumerate the actual USB identifiers without opening protocol handles or
-/// sending battery/configuration reports. One result per physical receiver.
+/// sending battery/configuration reports. One result per physical receiver;
+/// Bluetooth audio devices are listed alongside the receivers.
 pub fn enumerate_identifiers() -> Result<Vec<UsbIdentifiers>, String> {
     let api = HidApi::new().map_err(|_| "暂时无法读取设备，请稍后重试".to_string())?;
-    Ok(receiver_interfaces(&api)
+    let mut identifiers: Vec<_> = receiver_interfaces(&api)
         .values()
         .map(|interfaces| {
             let info = interfaces[0];
@@ -257,7 +258,17 @@ pub fn enumerate_identifiers() -> Result<Vec<UsbIdentifiers>, String> {
                 pid: info.product_id(),
             }
         })
-        .collect())
+        .collect();
+    identifiers.extend(
+        crate::bluetooth::audio_devices()
+            .into_iter()
+            .map(|reading| UsbIdentifiers {
+                hardware_name: reading.hardware_name,
+                vid: reading.vid,
+                pid: reading.pid,
+            }),
+    );
+    Ok(identifiers)
 }
 
 pub(crate) fn open_pair(api: &HidApi, info: &DeviceInfo) -> Result<(HidDevice, HidDevice), String> {
@@ -451,6 +462,7 @@ pub fn scan() -> Result<Vec<Reading>, String> {
             message: outcome.message,
         });
     }
+    result.extend(crate::bluetooth::audio_devices());
     result.sort_by_key(|r| {
         (
             r.kind != "mouse",

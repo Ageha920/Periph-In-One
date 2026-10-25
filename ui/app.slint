@@ -50,7 +50,7 @@ component DeviceCard inherits Rectangle {
         Image { x: 8px; y: 8px; width: 27px; height: 27px; source: root.data.kind == "mouse" ? @image-url("../assets/mouse.svg") : root.data.kind == "keyboard" ? @image-url("../assets/keyboard.svg") : root.data.kind == "gamepad" ? @image-url("../assets/gamepad.svg") : @image-url("../assets/headset.svg"); opacity: root.data.present ? 1 : 0.45; }
     }
     Text { x: 71px; y: 17px; width: parent.width - (root.data.present ? 120px : 152px); height: 25px; text: root.data.title; font-size: 17px; font-weight: 600; color: #18181b; overflow: elide; }
-    Text { x: 71px; y: 43px; width: parent.width - 100px; height: 18px; text: root.data.kind == "mouse" ? "无线鼠标 · 2.4G" : root.data.kind == "keyboard" ? "无线键盘 · 2.4G" : root.data.kind == "gamepad" ? "无线手柄 · 2.4G" : "无线耳机 · 2.4G"; font-size: 11px; color: #76767e; overflow: elide; }
+    Text { x: 71px; y: 43px; width: parent.width - 100px; height: 18px; text: root.data.kind == "mouse" ? "无线鼠标 · 2.4G" : root.data.kind == "keyboard" ? "无线键盘 · 2.4G" : root.data.kind == "gamepad" ? "无线手柄 · 2.4G" : root.data.kind == "bt-headset" ? "蓝牙耳机" : "无线耳机 · 2.4G"; font-size: 11px; color: #76767e; overflow: elide; }
     Rectangle {
         x: parent.width - 40px; y: 14px; width: 26px; height: 26px; border-radius: 7px;
         background: edit-touch.has-hover ? #ececef : transparent;

@@ -595,3 +595,39 @@ fn different_uids_stay_separate_even_on_matching_reports() {
     let ids: Vec<_> = devices.iter().map(|d| d.saved.id.clone()).collect();
     assert!(ids[0] != ids[1]);
 }
+
+#[test]
+fn bluetooth_headset_identity_is_stable_across_scans() {
+    fn bt_headset(battery: Option<u8>) -> Reading {
+        Reading {
+            physical_id: "bt:B0F00C29021C".into(),
+            kind: "bt-headset".into(),
+            hardware_name: "SOUNDPEATS Space".into(),
+            serial: String::new(),
+            uid: String::new(),
+            vid: 0x05d6,
+            pid: 0x000a,
+            battery,
+            no_battery: true,
+            message: "已连接".into(),
+        }
+    }
+    let first = model::merge_readings(&[], vec![bt_headset(None)], 1);
+    assert_eq!(first.len(), 1);
+    assert!(first[0].saved.id.starts_with("local:"));
+    assert_eq!(first[0].saved.kind, "bt-headset");
+    assert!(first[0].present);
+    // A second scan with the same address must reuse the record, not fork it.
+    let saved: Vec<_> = first.iter().map(|d| d.saved.clone()).collect();
+    let second = model::merge_readings(&saved, vec![bt_headset(Some(80))], 2);
+    assert_eq!(second.len(), 1);
+    assert_eq!(second[0].saved.id, first[0].saved.id);
+    assert_eq!(second[0].saved.battery, Some(80));
+    assert!(second[0].fresh);
+    // Powered off: kept offline with the last reading intact.
+    let saved: Vec<_> = second.iter().map(|d| d.saved.clone()).collect();
+    let offline = model::merge_readings(&saved, vec![], 3);
+    assert_eq!(offline.len(), 1);
+    assert!(!offline[0].present);
+    assert_eq!(offline[0].saved.battery, Some(80));
+}
